@@ -6,9 +6,11 @@
 #include <stdbool.h>
 #include <time.h>
 
+int run(BigInt (*f)(unsigned int, BigInt*));
+
 int main()
 {
-	/*
+	bigint_structinfo();
 	BigInt A = NULL;
 	BigInt B = NULL;
 	BigInt res = NULL;
@@ -41,9 +43,11 @@ int main()
 
 	bigint_mul(A, B, &res);
 	printf("A * B = ");
-	bigint_printf("%d\n", res);
+	bigint_printf("%d\n\%px\n", res, res);
+	printf("Size: %zu\n", bigint_size(res));
 
-	assert(bigint_cmp(A, bigint_div(res, B, &res, NULL)) == 0);
+	assert(bigint_cmp(A, bigint_div(res, B, &res, &rem)) == 0);
+	assert(bigint_cmp_small(rem, 0) == 0);
 
 	bigint_div(A, B, &res, &rem);
 	printf("A / B = ");
@@ -63,8 +67,13 @@ int main()
 	bigint_free(res);
 	bigint_free(rem);
 	bigint_memstat();
-	*/
+	return 0;
 
+	run(bigFib);
+}
+
+int run(BigInt (*f)(unsigned int, BigInt*)) {
+	bigint_structinfo();
 	BigInt res = bigint_alloc(10000);
 	while(1) {
 		int n;
@@ -72,7 +81,7 @@ int main()
 		if (n < 0) return 0;
 
 		clock_t start = clock();
-		bigFib(n, &res);
+		f(n, &res);
 		double time = (float)(clock() - start) / CLOCKS_PER_SEC;
 
 		start = clock();
@@ -103,6 +112,5 @@ int main()
 		printf("\n");
 	}
 	bigint_free(res);
-
 	return 0;
 }

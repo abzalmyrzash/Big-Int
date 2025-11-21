@@ -1,5 +1,5 @@
 *.exe
 *.bat
-.o
-.d
+*.o
+*.d
 tags

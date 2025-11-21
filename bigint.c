@@ -1,4 +1,5 @@
 #include "bigint.h"
+#include "elog.h"
 #include <immintrin.h>
 #include <intrin.h>
 #include <stdarg.h>
@@ -11,17 +12,17 @@
 
 int bigint_errno = 0;
 
-#define member_size(type, member) (sizeof( ((type *)0)->member ))
-
-typedef BigInt_DataBlock DataBlock;
+typedef BigInt_DataBlock  DataBlock;
+typedef BigInt_CapField   CapField;
+typedef BigInt_PointField PointField;
 typedef BigInt_FormatSpec FormatSpec;
 
-constexpr DataBlock BLOCK_MAX_VALUE = (DataBlock)~(DataBlock)0;
+#define CAP_WIDTH   BIGINT_CAP_WIDTH
+#define POINT_WIDTH BIGINT_POINT_WIDTH
 
-#define FORMAT_HEX     "%" PRIX64
-#define FORMAT_0HEX "%016" PRIX64
-#define FORMAT_hex     "%" PRIx64
-#define FORMAT_0hex "%016" PRIx64
+#define MAX_CAP     BIGINT_MAX_CAP
+
+constexpr DataBlock BLOCK_MAX_VALUE = (DataBlock)~0;
 
 #define HEX_PREFIX "0x"
 
@@ -37,18 +38,8 @@ constexpr DataBlock BLOCK_MAX_VALUE = (DataBlock)~(DataBlock)0;
 
 constexpr int HEX_PREFIX_LEN = sizeof(HEX_PREFIX) - 1;
 
-constexpr size_t BLOCK_SIZE = sizeof(DataBlock) * CHAR_BIT; // size of DataBlock in bits
+constexpr size_t BLOCK_WIDTH = sizeof(DataBlock) * CHAR_BIT; // size of DataBlock in bits
 
-typedef __uint128_t BigMult;
-
-// returns the low part of a * b, high part in *high
-static inline DataBlock block_mul(DataBlock a, DataBlock b, DataBlock* high) {
-	BigMult mul = (BigMult)a * b;
-	*high = mul >> BLOCK_SIZE;
-	return (DataBlock)mul;
-}
-
-/*
 static inline uint8_t _addcarry_u8(uint8_t cf, uint8_t a, uint8_t b, uint8_t* out) {
 	uint16_t res = (uint16_t)a + b + cf;
 	*out = res;
@@ -56,25 +47,86 @@ static inline uint8_t _addcarry_u8(uint8_t cf, uint8_t a, uint8_t b, uint8_t* ou
 }
 
 static inline uint8_t _subborrow_u8(uint8_t cf, uint8_t a, uint8_t b, uint8_t* out) {
-	uint16_t res = (uint16_t)a + 256 - b - cf;
+	uint16_t res = (uint16_t)a - b - cf;
 	*out = res;
-	return !(res >> 8);
+	return res > UINT8_MAX;
 }
-*/
 
-#define ADDCARRY _addcarry_u64
-#define SUBBORROW _subborrow_u64
+static inline uint16_t _addcarry_u16(uint16_t cf, uint16_t a, uint16_t b, uint16_t* out) {
+	uint32_t res = (uint32_t)a + b + cf;
+	*out = res;
+	return res >> 16;
+}
+
+static inline uint16_t _subborrow_u16(uint16_t cf, uint16_t a, uint16_t b, uint16_t* out) {
+	uint32_t res = (uint32_t)a - b - cf;
+	*out = res;
+	return res > UINT16_MAX;
+}
+
 #define CLZ(x) __builtin_clzg(x)
+#if BIGINT_BLOCK_WIDTH == 64
+	#define ADDCARRY _addcarry_u64
+	#define SUBBORROW _subborrow_u64
+	typedef __uint128_t BigMult;
+	#define FORMAT_HEX     "%" PRIX64
+	#define FORMAT_0HEX "%016" PRIX64
+	#define FORMAT_hex     "%" PRIx64
+	#define FORMAT_0hex "%016" PRIx64
+
+#elif BIGINT_BLOCK_WIDTH == 32
+	#define ADDCARRY _addcarry_u32
+	#define SUBBORROW _subborrow_u32
+	typedef uint64_t BigMult;
+	#define FORMAT_HEX     "%" PRIX32
+	#define FORMAT_0HEX  "%08" PRIX32
+	#define FORMAT_hex     "%" PRIx32
+	#define FORMAT_0hex  "%08" PRIx32
+
+#elif BIGINT_BLOCK_WIDTH == 16
+	#define ADDCARRY _addcarry_u16
+	#define SUBBORROW _subborrow_u16
+	typedef uint32_t BigMult;
+	#define FORMAT_HEX     "%" PRIX16
+	#define FORMAT_0HEX  "%04" PRIX16
+	#define FORMAT_hex     "%" PRIx16
+	#define FORMAT_0hex  "%04" PRIx16
+
+#elif BIGINT_BLOCK_WIDTH == 8
+	#define ADDCARRY _addcarry_u8
+	#define SUBBORROW _subborrow_u8
+	typedef uint16_t BigMult;
+	#define FORMAT_HEX     "%" PRIX8
+	#define FORMAT_0HEX  "%02" PRIX8
+	#define FORMAT_hex     "%" PRIx8
+	#define FORMAT_0hex  "%02" PRIx8
+#endif
+
+// returns the low part of a * b, high part in *high
+static inline DataBlock block_mul(DataBlock a, DataBlock b, DataBlock* high) {
+	BigMult mul = (BigMult)a * b;
+	*high = mul >> BLOCK_WIDTH;
+	return (DataBlock)mul;
+}
 
 struct bigint {
-	size_t size;
-	size_t cap;
+	CapField size;
+	CapField cap;
+#ifdef BIGINT_SPLIT_POINT_AND_SIGN
+	PointField point : POINT_WIDTH - 1;
+	PointField sign  : 1;
+#else
+	PointField point;
 	bool sign;
-	DataBlock data[];
-}; 
+#endif
+	DataBlock  data[];
+}
+#ifdef BIGINT_PACKED
+	__attribute__((packed))
+#endif
+;
 
-constexpr size_t BIGINT_OFFSET = offsetof(struct bigint, data);
-constexpr size_t SIZE_SIZE = sizeof(size_t) * CHAR_BIT; // size of size_t in bits
+constexpr uint8_t DATA_OFFSET = offsetof(struct bigint, data); // offset of data in bytes
 
 static unsigned long long cnt_alloc = 0;
 static unsigned long long cnt_realloc = 0;
@@ -84,33 +136,39 @@ BigInt bigint_bit_set(BigInt z, size_t bitpos);
 BigInt bigint_bit_unset(BigInt z, size_t bitpos);
 BigInt bigint_bit_toggle(BigInt z, size_t bitpos);
 
-static inline size_t ceil_pow2(size_t n) {
-	if (n <= 1) return 1;
-	return 1ULL << (SIZE_SIZE - CLZ(n - 1));
-}
-
 BigInt bigint_alloc(size_t cap) {
+	if (cap > MAX_CAP) {
+		ELOG_STR("cap exceeds MAX_CAP");
+		ELOG("Parameters: new_size = %zu\n", cap);
+		return NULL;
+	}
 	cnt_alloc++;
-	BigInt z = malloc(BIGINT_OFFSET + cap * sizeof(DataBlock));
+	BigInt z = malloc(DATA_OFFSET + cap * sizeof(DataBlock));
 	if (z == NULL) {
 		bigint_errno = BIGINT_ERR_ALLOC_FAIL;
-		fprintf(stderr, "ERROR %d in %s:%d:%s(%zu): %s\n",
-				errno, __FILE__, __LINE__, __FUNCTION__, cap, strerror(errno));
+		ELOG_CODE(errno);
+		ELOG("Parameters: cap = %zu\n", cap);
 		return NULL;
 	}
 	z->cap = cap;
 	z->size = 0;
+	z->point = 0;
 	z->sign = 0;
 	return z;
 }
 
 BigInt bigint_zalloc(size_t cap) {
+	if (cap > MAX_CAP) {
+		ELOG_STR("cap exceeds MAX_CAP");
+		ELOG("Parameters: new_size = %zu\n", cap);
+		return NULL;
+	}
 	cnt_alloc++;
-	BigInt z = calloc(1, BIGINT_OFFSET + cap * sizeof(DataBlock));
+	BigInt z = calloc(1, DATA_OFFSET + cap * sizeof(DataBlock));
 	if (z == NULL) {
 		bigint_errno = BIGINT_ERR_ALLOC_FAIL;
-		fprintf(stderr, "ERROR %d in %s:%d:%s(%zu): %s\n",
-				errno, __FILE__, __LINE__, __FUNCTION__, cap, strerror(errno));
+		ELOG_CODE(errno);
+		ELOG("Parameters: cap = %zu\n", cap);
 		return NULL;
 	}
 	z->cap = cap;
@@ -118,13 +176,18 @@ BigInt bigint_zalloc(size_t cap) {
 }
 
 BigInt bigint_realloc(BigInt* z_ptr, size_t cap) {
+	if (cap > MAX_CAP) {
+		ELOG_STR("cap exceeds MAX_CAP");
+		ELOG("Parameters: new_size = %zu\n", cap);
+		return NULL;
+	}
 	if (*z_ptr == NULL) return *z_ptr = bigint_alloc(cap);
 	cnt_realloc++;
-	BigInt z = realloc(*z_ptr, BIGINT_OFFSET + cap * sizeof(DataBlock));
+	BigInt z = realloc(*z_ptr, DATA_OFFSET + cap * sizeof(DataBlock));
 	if (z == NULL) {
 		bigint_errno = BIGINT_ERR_ALLOC_FAIL;
-		fprintf(stderr, "ERROR %d in %s:%d:%s(%zu): %s\n",
-				errno, __FILE__, __LINE__, __FUNCTION__, cap, strerror(errno));
+		ELOG_CODE(errno);
+		ELOG("Parameters: cap = %zu\n", cap);
 		return NULL;
 	}
 	z->cap = cap;
@@ -132,10 +195,16 @@ BigInt bigint_realloc(BigInt* z_ptr, size_t cap) {
 }
 
 BigInt bigint_rezalloc(BigInt* z_ptr, size_t cap) {
+	if (cap > MAX_CAP) {
+		ELOG_STR("cap exceeds MAX_CAP");
+		ELOG("Parameters: new_size = %zu\n", cap);
+		return NULL;
+	}
 	BigInt z = *z_ptr;
 	if (z && z->cap >= cap) {
 		memset(z->data, 0, cap * sizeof(DataBlock));
 		z->size = 0;
+		z->point = 0;
 		z->sign = 0;
 	}
 	else {
@@ -152,6 +221,12 @@ void bigint_free(BigInt z) {
 		free(z);
 		cnt_free++;
 	}
+}
+
+void bigint_structinfo() {
+	printf("sizeof(bigint): %zu\n", sizeof(struct bigint));
+	printf("offsetof(bigint, data): %zu\n", offsetof(struct bigint, data));
+	printf("sizeof(DataBlock): %zu\n", sizeof(DataBlock));
 }
 
 void bigint_memstat() {
@@ -173,26 +248,44 @@ const DataBlock* bigint_data(ConstBigInt z) {
 }
 
 BigInt bigint_resize(BigInt* z_ptr, size_t new_size) {
-	if (*z_ptr == NULL || (*z_ptr)->cap < new_size) {
-		if (!bigint_realloc(z_ptr, new_size)) return NULL;
+	if (new_size > MAX_CAP) {
+		ELOG_STR("new_size exceeds MAX_CAP");
+		ELOG("Parameters: new_size = %zu\n", new_size);
+		return NULL;
 	}
-	if (new_size == 0) (*z_ptr)->sign = 0;
-	(*z_ptr)->size = new_size;
-	return *z_ptr;
+	BigInt z = *z_ptr;
+	if (!z || z->cap < new_size) {
+		z = bigint_realloc(z_ptr, new_size);
+		if (!z) return NULL;
+	}
+	/*
+	if (new_size == 0) {
+		z->point = 0;
+		z->sign  = 0;
+	}
+	*/
+	z->size = new_size;
+	return z;
 }
 
 bool bigint_sign(ConstBigInt z) {
 	return z->sign;
 }
 
+size_t bigint_point(ConstBigInt z) {
+	return z->point;
+}
+
 BigInt bigint_abs(ConstBigInt z, BigInt* out_ptr) {
-	BigInt out = bigint_resize(out_ptr, z->size);
+	BigInt out = *out_ptr;
+	if (out != z) out = bigint_copy(out_ptr, z);
 	out->sign = 0;
 	return out;
 }
 
 BigInt bigint_neg(ConstBigInt z, BigInt* out_ptr) {
-	BigInt out = bigint_resize(out_ptr, z->size);
+	BigInt out = *out_ptr;
+	if (out != z) out = bigint_copy(out_ptr, z);
 	out->sign = !z->sign;
 	return out;
 }
@@ -212,40 +305,31 @@ BigInt bigint_set_zero(BigInt* z_ptr) {
 
 BigInt bigint_set_small(BigInt* z_ptr, SmallInt v) {
 	if (v == 0) return bigint_set_zero(z_ptr);
-	if (!bigint_resize(z_ptr, 1)) return NULL;
-	(*z_ptr)->data[0] = ABS(v);
-	(*z_ptr)->sign = (v < 0);
-	return *z_ptr;
+	BigInt z = bigint_resize(z_ptr, 1);
+	if (!z) return NULL;
+	z->data[0] = ABS(v);
+	z->point = 0;
+	z->sign = (v < 0);
+	return z;
 }
 
 BigInt bigint_set_usmall(BigInt* z_ptr, USmallInt v) {
 	if (v == 0) return bigint_set_zero(z_ptr);
-	if (!bigint_resize(z_ptr, 1)) return NULL;
-	(*z_ptr)->data[0] = v;
-	(*z_ptr)->sign = false;
-	return *z_ptr;
-}
-
-BigInt bigint_fill_zero(BigInt z) {
-	z->size = 0;
+	BigInt z = bigint_resize(z_ptr, 1);
+	if (!z) return NULL;
+	z->data[0] = v;
+	z->point = 0;
 	z->sign = 0;
-	memset(z->data, 0, z->cap * sizeof(DataBlock));
 	return z;
 }
 
 BigInt bigint_create_small(SmallInt v) {
 	if (v == 0) return bigint_create_zero();
 	BigInt z = bigint_alloc(1);
-    if (v > 0) {
-        z->data[0] = v;
-		z->size = 1;
-		z->sign = false;
-    }
-    else {
-        z->data[0] = ABS(v);
-		z->size = 1;
-		z->sign = true;
-    }
+	z->data[0] = ABS(v);
+	z->size = 1;
+	z->point = 0;
+	z->sign = (v < 0);
     return z;
 }
 
@@ -254,6 +338,7 @@ BigInt bigint_create_usmall(USmallInt v) {
 	BigInt z = bigint_alloc(1);
 	z->data[0] = v;
 	z->size = 1;
+	z->point = 0;
 	z->sign = 0;
     return z;
 }
@@ -262,15 +347,16 @@ BigInt bigint_copy(BigInt* dst_ptr, ConstBigInt src) {
 	assert(src);
 	assert(dst_ptr);
 	BigInt dst = *dst_ptr;
+	if (dst == src) return dst;
 
-	size_t cap = ceil_pow2(src->size);
-	if (dst == NULL) dst = bigint_alloc(cap);
+	if (dst == NULL) dst = bigint_alloc(src->size);
 	else if (dst->cap < src->size) {
 		bigint_free(dst);
-		dst = bigint_alloc(cap);
+		dst = bigint_alloc(src->size);
 	}
 	if (dst == NULL) return NULL;
 	memcpy(dst->data, src->data, src->size * sizeof(DataBlock));
+	dst->point = src->point;
 	dst->sign = src->sign;
 	dst->size = src->size;
 	return *dst_ptr = dst;
@@ -307,6 +393,7 @@ int bigint_cmp(ConstBigInt a, ConstBigInt b) {
 	assert(b);
 
 	if (a->size == 0 && b->size == 0) return 0;
+
 	if (a->sign && !b->sign) return -1;
 	if (!a->sign && b->sign) return 1;
 	if (a->sign) return bigint_ucmp(b, a);
@@ -330,7 +417,7 @@ int bigint_ucmp_small(ConstBigInt a, USmallInt b) {
 
 int bigint_cmp_small(ConstBigInt a, SmallInt b) {
 	if (a->size == 0) return b;
-	if (a->size > 1) return !a->sign;
+	if (a->size > 1) return (a->sign) ? -1 : 1;
 	return bigint_small(a) - b;
 }
 
@@ -508,6 +595,7 @@ BigInt bigint_umul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 			size_t idx = i + j + 2;
 			while (carry) {
 				carry = ADDCARRY(carry, arr[idx], 0, &arr[idx]);
+				idx++;
 			}
 		}
 	}
@@ -545,6 +633,7 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 	assert(out_ptr);
 	if (b->size == 0) {
 		bigint_errno = BIGINT_ERR_DIV_BY_ZERO;
+		ELOG_STR("DIVISION BY ZERO");
 		return NULL;
 	}
 
@@ -631,11 +720,11 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 			if (!bigint_rezalloc(&out, size_diff)) goto error;
 			out->size = size_diff;
 			bigint_rshift_digits(c, 1, &c);
-			bitpos = (size_diff - 1) * BLOCK_SIZE;
+			bitpos = (size_diff - 1) * BLOCK_WIDTH;
 		} else {
 			if (!bigint_rezalloc(&out, size_diff + 1)) goto error;
 			out->size = size_diff + 1;
-			bitpos = size_diff * BLOCK_SIZE;
+			bitpos = size_diff * BLOCK_WIDTH;
 		}
 
 		do {
@@ -650,6 +739,7 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 		while(bigint_ucmp(rem, b) >= 0) {
 			while (bigint_ucmp(rem, c) < 0) {
 				bigint_rshift(c, 1, &c);
+				assert(bitpos > 0);
 				bitpos--;
 			}
 			bigint_usub(rem, c, &rem);
@@ -658,6 +748,15 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 	}
 
 ret:
+	/*
+	BigInt check = NULL;
+	bigint_umul(out, b, &check);
+	assert(check);
+	bigint_uadd(check, rem, &check);
+	assert(check);
+	assert(bigint_ucmp(check, a) == 0 || bigint_printf("\n%px\n\n", check));
+	free(check);
+	*/
 	bigint_free(c);
 	if (a_copy) bigint_free((BigInt)a);
 	if (b_copy) bigint_free((BigInt)b);
@@ -698,6 +797,7 @@ BigInt bigint_lshift_digits(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 	assert(z);
 	assert(out_ptr);
 	if (z->size == 0) return bigint_set_zero(out_ptr);
+	if (shift == 0) return bigint_copy(out_ptr, z);
 
 	size_t out_size = z->size + shift;
 	if (!bigint_resize(out_ptr, out_size)) return NULL;
@@ -710,6 +810,7 @@ BigInt bigint_rshift_digits(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 	assert(z);
 	assert(out_ptr);
 	if (z->size <= shift) return bigint_set_zero(out_ptr);
+	if (shift == 0) return bigint_copy(out_ptr, z);
 
 	size_t out_size = z->size - shift;
 	if (!bigint_resize(out_ptr, out_size)) return NULL;
@@ -722,11 +823,11 @@ BigInt bigint_lshift(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 	assert(out_ptr);
 	if (z->size == 0) return bigint_set_zero(out_ptr);
 
-	const size_t shift_digits = shift / BLOCK_SIZE;
-	const size_t shift_bits = shift % BLOCK_SIZE;
+	const size_t shift_digits = shift / BLOCK_WIDTH;
+	const size_t shift_bits = shift % BLOCK_WIDTH;
 	if (shift_bits == 0) return bigint_lshift_digits(z, shift_digits, out_ptr);
 
-	const DataBlock LOW_BITS = (1ULL << (BLOCK_SIZE - shift_bits)) - 1;
+	const DataBlock LOW_BITS = (1ULL << (BLOCK_WIDTH - shift_bits)) - 1;
 	const DataBlock HIGH_BITS = ~0ULL - LOW_BITS;
 
 	size_t out_size = z->size + shift_digits;
@@ -740,7 +841,7 @@ BigInt bigint_lshift(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 	if (hi) {
 		out = bigint_resize(out_ptr, ++out_size);
 		if (!out) return NULL;
-		out->data[i + shift_digits + 1] = hi >> (BLOCK_SIZE - shift_bits);
+		out->data[i + shift_digits + 1] = hi >> (BLOCK_WIDTH - shift_bits);
 	} else {
 		out = bigint_resize(out_ptr, out_size);
 		if (!out) return NULL;
@@ -751,7 +852,7 @@ BigInt bigint_lshift(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 		hi = z->data[i] & HIGH_BITS;
 		lo = z->data[i] & LOW_BITS;
 		out->data[i + shift_digits] = lo << shift_bits;
-		out->data[i + shift_digits + 1] |= hi >> (BLOCK_SIZE - shift_bits);
+		out->data[i + shift_digits + 1] |= hi >> (BLOCK_WIDTH - shift_bits);
 		if (i == 0) break;
 		i--;
 	}
@@ -764,8 +865,8 @@ BigInt bigint_rshift(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 	assert(z);
 	assert(out_ptr);
 
-	size_t shift_digits = shift / BLOCK_SIZE;
-	size_t shift_bits = shift % BLOCK_SIZE;
+	size_t shift_digits = shift / BLOCK_WIDTH;
+	size_t shift_bits = shift % BLOCK_WIDTH;
 	if (shift_bits == 0) return bigint_rshift_digits(z, shift_digits, out_ptr);
 
 	size_t z_size = z->size;
@@ -774,7 +875,7 @@ BigInt bigint_rshift(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 	}
 
 	size_t out_size = z_size - shift_digits;
-	if (shift_bits >= BLOCK_SIZE - CLZ(z->data[z_size - 1])) {
+	if (shift_bits >= BLOCK_WIDTH - CLZ((DataBlock)z->data[z_size - 1])) {
 		if (out_size <= 1) return bigint_set_zero(out_ptr);
 		out_size--;
 	}
@@ -789,49 +890,71 @@ BigInt bigint_rshift(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 	for (i = 0; i < out_size - 1; i++) {
 		hi = z->data[i + shift_digits] & HIGH_BITS;
 		lo = z->data[i + shift_digits + 1] & LOW_BITS;
-		out->data[i] = (hi >> shift_bits) | lo << (BLOCK_SIZE - shift_bits);
+		out->data[i] = (hi >> shift_bits) | lo << (BLOCK_WIDTH - shift_bits);
 	}
 
 	hi = z->data[i + shift_digits] & HIGH_BITS;
 	if (i + shift_digits + 1 < z_size)
 		lo = z->data[i + shift_digits + 1] & LOW_BITS;
 	else lo = 0;
-	out->data[i] = (hi >> shift_bits) | lo << (BLOCK_SIZE - shift_bits);
+	out->data[i] = (hi >> shift_bits) | lo << (BLOCK_WIDTH - shift_bits);
 
 	return out;
 }
 
 BigInt bigint_bit_set(BigInt z, size_t bitpos) {
 	assert(z);
-	z->data[bitpos / BLOCK_SIZE] |= (1ULL << (bitpos % BLOCK_SIZE));
+	z->data[bitpos / BLOCK_WIDTH] |= (1ULL << (bitpos % BLOCK_WIDTH));
 	return z;
 }
 
 BigInt bigint_bit_unset(BigInt z, size_t bitpos) {
 	assert(z);
-	z->data[bitpos / BLOCK_SIZE] &= ~(1ULL << (bitpos % BLOCK_SIZE));
+	z->data[bitpos / BLOCK_WIDTH] &= ~(1ULL << (bitpos % BLOCK_WIDTH));
 	return z;
 }
 
 BigInt bigint_bit_toggle(BigInt z, size_t bitpos) {
 	assert(z);
-	z->data[bitpos / BLOCK_SIZE] ^= (1ULL << (bitpos % BLOCK_SIZE));
+	z->data[bitpos / BLOCK_WIDTH] ^= (1ULL << (bitpos % BLOCK_WIDTH));
 	return z;
 }
 
 int bigint_fwrite(FILE* file, ConstBigInt z, bool is_signed) {
-	if (fwrite(&z->size, sizeof(z->size), 1, file) != 1) return errno;
-	if (is_signed && fwrite(&z->sign, sizeof(z->sign), 1, file) != 1) return errno;
-	if (fwrite(&z->data, sizeof(*z->data), z->size, file) != z->size) return errno;
+	assert(z);
+	uint64_t size = z->size;
+	if (fwrite(&size, sizeof(size), 1, file) != 1) {
+		return errno;
+	}
+	uint64_t point = z->point;
+	if (fwrite(&point, sizeof(point), 1, file) != 1) {
+		return errno;
+	}
+	bool sign = z->sign;
+	if (is_signed && fwrite(&sign, sizeof(sign), 1, file) != 1) {
+		return errno;
+	}
+	if (fwrite(&z->data, sizeof(*z->data), z->size, file) != z->size) {
+		return errno;
+	}
 	return 0;
 }
 
 int bigint_fread(FILE* file, BigInt* z_ptr, bool is_signed) {
-	size_t size;
-	if (fread(&size, sizeof(size_t), 1, file) != 1) return errno;
+	assert(z_ptr);
+	uint64_t size;
+	if (fread(&size, sizeof(size), 1, file) != 1) return errno;
 	BigInt z = bigint_resize(z_ptr, size);
 	if (!z) return errno;
-	if (is_signed && fread(&z->sign, sizeof(z->sign), 1, file) != 1) return errno;
+
+	uint64_t point;
+	if (fread(&point, sizeof(point), 1, file) != 1) return errno;
+	z->point = point;
+
+	bool sign;
+	if (is_signed && fread(&sign, sizeof(sign), 1, file) != 1) return errno;
+	z->sign = sign;
+
 	if (fread(&z->data, sizeof(*z->data), size, file) != size) return errno;
 	return 0;
 }
@@ -880,23 +1003,20 @@ int _bigint_fprintf(FILE* file, const char* const format, va_list args) {
 				read_big_int:
 					ConstBigInt z = va_arg(args, ConstBigInt);
 					if (!z) {
-						fprintf(stderr, "ERROR in %s:%d:%s(): NULL argument.\n",
-								__FILE__, __LINE__, __FUNCTION__);
+						ELOG_CODE_STR(errno, "NULL argument");
 						return -1;
 					}
 
 					bifs.uppercase = (c == 'X');
 					char* str = bigint_str(z, bifs);
 					if (!str) {
-						fprintf(stderr, "ERROR in %s:%d:%s(): failed to allocate str.\n",
-								__FILE__, __LINE__, __FUNCTION__);
+						ELOG_CODE_STR(errno, "failed to allocate str");
 						return -1;
 					}
 
 					int res = fprintf(file, "%s", str);
 					if (res < 0) {
-						fprintf(stderr, "ERROR in %s:%d:%s(): fprintf failed.\n",
-								__FILE__, __LINE__, __FUNCTION__);
+						ELOG_CODE_STR(errno, "fprintf failed");
 						return -1;
 					}
 
@@ -909,8 +1029,7 @@ int _bigint_fprintf(FILE* file, const char* const format, va_list args) {
 				case '%':
 					int err = putc('%', file);
 					if (res < 0) {
-						fprintf(stderr, "ERROR in %s:%d:%s(): putc failed with code %d.\n",
-								__FILE__, __LINE__, __FUNCTION__, res);
+						ELOG_CODE_STR(errno, "putc failed");
 						return res;
 					}
 					processing_bifs = false;
@@ -1133,7 +1252,7 @@ BigInt bigint_scan_hex(const char* str, size_t str_len, BigInt* out_ptr) {
 		}
 
 		if (value) {
-			out->size = shift / BLOCK_SIZE + 1;
+			out->size = shift / BLOCK_WIDTH + 1;
 			if (value & 1)
 				bigint_bit_set(out, shift);
 			if (value & 2)

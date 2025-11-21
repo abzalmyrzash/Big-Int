@@ -1,5 +1,5 @@
 #pragma once
-#include <stdint.h>
+#include "bigint_params.h"
 #include <stdio.h>
 
 extern int bigint_errno;
@@ -8,11 +8,6 @@ extern int bigint_errno;
 
 typedef struct bigint* BigInt;
 typedef const struct bigint* ConstBigInt;
-
-typedef int64_t SmallInt;
-typedef uint64_t USmallInt;
-typedef uint64_t BigInt_DataBlock;
-
 typedef struct {
 	uint8_t base;
 	bool is_unsigned;
@@ -23,16 +18,18 @@ typedef struct {
 	bool uppercase;
 } BigInt_FormatSpec;
 
-BigInt bigint_alloc(size_t size);
-BigInt bigint_zalloc(size_t size);
+BigInt bigint_alloc(size_t cap);
+BigInt bigint_zalloc(size_t cap);
 BigInt bigint_realloc(BigInt* z, size_t cap);
 
 void bigint_free(BigInt z);
+void bigint_structinfo();
 void bigint_memstat();
 
 size_t bigint_size(ConstBigInt z);
 size_t bigint_cap(ConstBigInt z);
-bool bigint_sign(ConstBigInt z);
+size_t bigint_point(ConstBigInt z);
+bool   bigint_sign(ConstBigInt z);
 const BigInt_DataBlock* bigint_data(ConstBigInt z);
 
 BigInt bigint_abs(ConstBigInt z, BigInt* out);

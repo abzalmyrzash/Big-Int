@@ -1,5 +1,6 @@
 #include "fib.h"
 #include <assert.h>
+#include "elog.h"
 
 uint64_t fib(unsigned int n)
 {
@@ -30,6 +31,10 @@ BigInt bigFib(unsigned int n, BigInt* out_ptr)
 	for (int i = 3; i <= n; i++) {
 		bigint_copy(&tmp, out);
 		out = bigint_uadd(out, a, out_ptr);
+		if (!out) {
+			ELOG_STR("failed to add");
+			return NULL;
+		}
 		bigint_copy(&a, tmp);
 	}
 	bigint_free(a);
