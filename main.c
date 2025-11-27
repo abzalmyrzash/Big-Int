@@ -10,30 +10,37 @@ int run(BigInt (*f)(unsigned int, BigInt*));
 
 int main()
 {
-	bigint_structinfo();
+	bigint_init();
+
 	BigInt A = NULL;
 	BigInt B = NULL;
 	BigInt res = NULL;
 	BigInt rem = NULL;
 
-	printf("Enter a: ");
-	constexpr int buffer_size = 256;
+	constexpr int buffer_size = 1024;
 	char buffer[buffer_size];
+
+	printf("Enter a: ");
 	fgets(buffer, buffer_size, stdin);
 	bigint_scan(buffer, &A);
-
-	bigint_printf("%p0_x\n%0_d\n", A, A);
+	bigint_printf("%p0_x\n", A);
+	// bigint_printf("%0_d\n", A);
+	printf("Size: %zu\n", bigint_size(A));
 
 	printf("Enter b: ");
 	fgets(buffer, buffer_size, stdin);
 	bigint_scan(buffer, &B);
-	bigint_printf("%p0_x\n%0_d\n", B, B);
+	bigint_printf("%p0_x\n", B, B);
+	// bigint_printf("%0_d\n", B, B);
+	printf("Size: %zu\n", bigint_size(B));
 
 	bigint_add(A, B, &res);
 	printf("A + B = ");
 	bigint_printf("%d\n", res);
 
-	assert(bigint_cmp(A, bigint_sub(res, B, &res)) == 0);
+	assert(bigint_cmp(A, bigint_sub(res, B, &res)) == 0 || ({
+				bigint_printf("%d\n", res);
+				}));
 
 	bigint_sub(A, B, &res);
 	printf("A - B = ");
@@ -43,8 +50,7 @@ int main()
 
 	bigint_mul(A, B, &res);
 	printf("A * B = ");
-	bigint_printf("%d\n\%px\n", res, res);
-	printf("Size: %zu\n", bigint_size(res));
+	bigint_printf("%d\n", res);
 
 	assert(bigint_cmp(A, bigint_div(res, B, &res, &rem)) == 0);
 	assert(bigint_cmp_small(rem, 0) == 0);
@@ -67,6 +73,7 @@ int main()
 	bigint_free(res);
 	bigint_free(rem);
 	bigint_memstat();
+	bigint_finish();
 	return 0;
 
 	run(bigFib);

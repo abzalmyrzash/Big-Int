@@ -1,10 +1,14 @@
 #pragma once
 #include "bigint_params.h"
 #include <stdio.h>
+#include <stdbool.h>
 
 extern int bigint_errno;
-#define BIGINT_ERR_ALLOC_FAIL -1
-#define BIGINT_ERR_DIV_BY_ZERO -2
+#define BIGINT_ERR_ALLOC_FAIL  -1
+#define BIGINT_ERR_SUB_NEG     -2
+#define BIGINT_ERR_DIV_BY_ZERO -3
+
+typedef struct bigint_context* BigInt_Context;
 
 typedef struct bigint* BigInt;
 typedef const struct bigint* ConstBigInt;
@@ -13,14 +17,17 @@ typedef struct {
 	bool is_unsigned;
 	bool add_plus_sign;
 	bool add_prefix;
-	bool leading_zeroes;
+	bool leading_zeros;
 	bool add_spaces;
 	bool uppercase;
 } BigInt_FormatSpec;
 
+void bigint_init();
+void bigint_finish();
+
 BigInt bigint_alloc(size_t cap);
 BigInt bigint_zalloc(size_t cap);
-BigInt bigint_realloc(BigInt* z, size_t cap);
+BigInt bigint_realloc(BigInt* z, size_t cap, bool keep_data);
 
 void bigint_free(BigInt z);
 void bigint_structinfo();
@@ -86,8 +93,8 @@ BigInt bigint_div(ConstBigInt a, ConstBigInt b, BigInt* out, BigInt* rem);
 
 BigInt bigint_lshift(ConstBigInt z, size_t shift, BigInt* out);
 BigInt bigint_rshift(ConstBigInt z, size_t shift, BigInt* out);
-BigInt bigint_lshift_digits(ConstBigInt z, size_t shift, BigInt* out);
-BigInt bigint_rshift_digits(ConstBigInt z, size_t shift, BigInt* out);
+BigInt bigint_lshift_blocks(ConstBigInt z, size_t shift, BigInt* out);
+BigInt bigint_rshift_blocks(ConstBigInt z, size_t shift, BigInt* out);
 
 char* bigint_str(ConstBigInt z, BigInt_FormatSpec bifs);
 char* bigint_hex_str(ConstBigInt z, BigInt_FormatSpec bifs);
