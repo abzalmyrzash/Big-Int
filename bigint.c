@@ -1,178 +1,12 @@
-#include "bigint.h"
-#include "elog.h"
-#include <immintrin.h>
-#include <intrin.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
+#include "bigint_impl.h"
 #include <assert.h>
-#include <errno.h>
-#include <inttypes.h>
-#include <limits.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include "elog.h"
 
 int bigint_errno = 0;
 
-typedef BigInt_DataBlock  DataBlock;
-typedef BigInt_CapField   CapField;
-typedef BigInt_PointField PointField;
-typedef BigInt_FormatSpec FormatSpec;
-
-#define CAP_WIDTH   BIGINT_CAP_WIDTH
-#define POINT_WIDTH BIGINT_POINT_WIDTH
-
-#define MAX_CAP     BIGINT_MAX_CAP
-
-constexpr DataBlock BLOCK_MAX_VALUE = (DataBlock)~0;
-
-#define HEX_PREFIX "0x"
-
-#define IS_SIGNED_TYPE(TYPE)    !IS_UNSIGNED_TYPE(TYPE)
-#define IS_UNSIGNED_TYPE(TYPE)  ((TYPE)-1 > 0)
-#define MAX_DEC_INT_DIGITS(TYPE)                \
-  ((((sizeof(TYPE) * CHAR_BIT * 1233) >> 12) + 1) \
-    + IS_SIGNED_TYPE(TYPE))
-
-#define HEX_DIGITS_PER_BLOCK (sizeof(DataBlock) * 2)
-#define MAX_DEC_DIGITS_PER_BLOCK MAX_DEC_INT_DIGITS(DataBlock)
-#define DEC_DIGITS_PER_SPACE 3
-
-constexpr int HEX_PREFIX_LEN = sizeof(HEX_PREFIX) - 1;
-
-constexpr size_t BLOCK_WIDTH = sizeof(DataBlock) * CHAR_BIT; // size of DataBlock in bits
-
-static inline uint8_t _addcarry_u8(uint8_t cf, uint8_t a, uint8_t b, uint8_t* out) {
-	uint16_t res = (uint16_t)a + b + cf;
-	*out = res;
-	return res >> 8;
-}
-
-static inline uint8_t _subborrow_u8(uint8_t cf, uint8_t a, uint8_t b, uint8_t* out) {
-	uint16_t res = (uint16_t)a - b - cf;
-	*out = res;
-	return res > UINT8_MAX;
-}
-
-static inline uint16_t _addcarry_u16(uint16_t cf, uint16_t a, uint16_t b, uint16_t* out) {
-	uint32_t res = (uint32_t)a + b + cf;
-	*out = res;
-	return res >> 16;
-}
-
-static inline uint16_t _subborrow_u16(uint16_t cf, uint16_t a, uint16_t b, uint16_t* out) {
-	uint32_t res = (uint32_t)a - b - cf;
-	*out = res;
-	return res > UINT16_MAX;
-}
-
-#define CLZ(x) __builtin_clzg(x)
-#if BIGINT_BLOCK_WIDTH == 64
-	#define ADDCARRY _addcarry_u64
-	#define SUBBORROW _subborrow_u64
-	typedef __uint128_t BigMult;
-	#define FORMAT_HEX     "%" PRIX64
-	#define FORMAT_0HEX "%016" PRIX64
-	#define FORMAT_hex     "%" PRIx64
-	#define FORMAT_0hex "%016" PRIx64
-
-#elif BIGINT_BLOCK_WIDTH == 32
-	#define ADDCARRY _addcarry_u32
-	#define SUBBORROW _subborrow_u32
-	typedef uint64_t BigMult;
-	#define FORMAT_HEX     "%" PRIX32
-	#define FORMAT_0HEX  "%08" PRIX32
-	#define FORMAT_hex     "%" PRIx32
-	#define FORMAT_0hex  "%08" PRIx32
-
-#elif BIGINT_BLOCK_WIDTH == 16
-	#define ADDCARRY _addcarry_u16
-	#define SUBBORROW _subborrow_u16
-	typedef uint32_t BigMult;
-	#define FORMAT_HEX     "%" PRIX16
-	#define FORMAT_0HEX  "%04" PRIX16
-	#define FORMAT_hex     "%" PRIx16
-	#define FORMAT_0hex  "%04" PRIx16
-
-#elif BIGINT_BLOCK_WIDTH == 8
-	#define ADDCARRY _addcarry_u8
-	#define SUBBORROW _subborrow_u8
-	typedef uint16_t BigMult;
-	#define FORMAT_HEX     "%" PRIX8
-	#define FORMAT_0HEX  "%02" PRIX8
-	#define FORMAT_hex     "%" PRIx8
-	#define FORMAT_0hex  "%02" PRIx8
-#endif
-
-// returns the low part of a * b, high part in *high
-static inline DataBlock block_mul(DataBlock a, DataBlock b, DataBlock* high) {
-	BigMult mul = (BigMult)a * b;
-	*high = mul >> BLOCK_WIDTH;
-	return (DataBlock)mul;
-}
-
-// Meant to be used with an array successively. Assigns no leading zeros.
-// Doesn't assign the result to out if it's zero, but increments cnt_zeros.
-// If it is non-zero, assigns result to out, sets cnt_zeros blocks
-// that came before out, to 0, and sets cnt_zeros back to 0.
-static inline uint8_t subborrow_nlz(uint8_t cf, DataBlock a, DataBlock b,
-		DataBlock* out, size_t* cnt_zeros) {	
-	DataBlock block;
-	uint8_t borrow = SUBBORROW(cf, a, b, &block);
-	if (block == 0) {
-		(*cnt_zeros)++;
-	}
-	else {
-		*out = block;
-		if (*cnt_zeros > 0) {
-			memset(out - *cnt_zeros, 0, *cnt_zeros * sizeof(DataBlock));
-			*cnt_zeros = 0;
-		}
-	}
-	return borrow;
-}
-
-// size:  length of number in datablocks
-// cap:   number of datablocks allocated
-// point: position of the fractional point
-// sign:  0 means positive, 1 means negative
-struct bigint {
-	CapField   size;
-	CapField   cap;
-#ifdef BIGINT_SPLIT_POINT_AND_SIGN
-	PointField point : POINT_WIDTH - 1;
-	PointField sign  : 1;
-#else
-	PointField point;
-	bool sign;
-#endif
-	DataBlock  data[];
-}
-#ifdef BIGINT_PACKED
-	__attribute__((packed))
-#endif
-;
-
-typedef struct {
-	const DataBlock* data;
-	CapField size;
-} Slice;
-
-typedef struct {
-	void* buf;
-	size_t bufsize;
-} Context;
-
 static thread_local Context ctx;
-
-void bigint_init() {
-	ctx.buf = NULL;
-	ctx.bufsize = 0;
-}
-
-void bigint_finish() {
-	free(ctx.buf);
-}
-
-constexpr uint8_t DATA_OFFSET = offsetof(struct bigint, data); // offset of data in bytes
 
 static unsigned long long cnt_alloc = 0;
 static unsigned long long cnt_realloc = 0;
@@ -181,6 +15,15 @@ static unsigned long long cnt_free = 0;
 BigInt bigint_bit_set(BigInt z, size_t bitpos);
 BigInt bigint_bit_unset(BigInt z, size_t bitpos);
 BigInt bigint_bit_toggle(BigInt z, size_t bitpos);
+
+void bigint_init(void) {
+	ctx.buf = NULL;
+	ctx.bufsize = 0;
+}
+
+void bigint_finish(void) {
+	free(ctx.buf);
+}
 
 BigInt bigint_alloc(size_t cap) {
 	if (cap > MAX_CAP) {
@@ -290,13 +133,13 @@ void bigint_free(BigInt z) {
 	}
 }
 
-void bigint_structinfo() {
+void bigint_structinfo(void) {
 	printf("sizeof(bigint): %zu\n", sizeof(struct bigint));
 	printf("offsetof(bigint, data): %zu\n", offsetof(struct bigint, data));
 	printf("sizeof(DataBlock): %zu\n", sizeof(DataBlock));
 }
 
-void bigint_memstat() {
+void bigint_memstat(void) {
 	printf("Alloc: %llu\n", cnt_alloc);
 	printf("Realloc: %llu\n", cnt_realloc);
 	printf("Free: %llu\n", cnt_free);
@@ -415,133 +258,6 @@ BigInt bigint_copy(BigInt* dst_ptr, ConstBigInt src) {
 	return *dst_ptr = dst;
 }
 
-// standard comparison function
-static int cmp(Slice a, Slice b) {
-	if (a.size > b.size) return 1;
-	if (a.size < b.size) return -1;
-	if (a.size == 0) return 0;
-	size_t i = a.size - 1;
-	while (1) {
-		if (a.data[i] > b.data[i]) return 1;
-		if (a.data[i] < b.data[i]) return -1;
-		if (i == 0) return 0;
-		i--;
-	}
-}
-
-// Same as cmp, but you pass pointer to diff_point (can't be NULL).
-// For a and b that have the same size,
-// diff_point is the point at which a and b differ
-// (counting from least significant block).
-// For example (let's assume the digits here are blocks):
-// a = 12345, b = 12356. Their first three digits are the same,
-// leaving the last two digits (45 in a and 56 in b) that are different.
-// Therefore diff_point = 2.
-// If one number's size is larger than the other, diff_point = the larger size.
-// If both numbers are the same, diff_point = 0.
-static int cmpd(Slice a, Slice b, size_t* diff_point) {
-	assert(diff_point);
-	if (a.size > b.size) {
-		*diff_point = a.size;
-		return 1;
-	}
-	if (a.size < b.size) {
-		*diff_point = b.size;
-		return -1;
-	}
-	if (a.size == 0) {
-		*diff_point = 0;
-		return 0;
-	}
-	size_t i = a.size - 1;
-	while (1) {
-		if (a.data[i] > b.data[i]) {
-			*diff_point = i + 1;
-			return 1;
-		}
-		if (a.data[i] < b.data[i]) {
-			*diff_point = i + 1;
-			return -1;
-		}
-		if (i == 0) {
-			*diff_point = 0;
-			return 0;
-		}
-		i--;
-	}
-}
-
-// compare (a << lshift) with b
-// NOTE: lshift by number of blocks not bits
-static int cmp_lshifted(Slice a, size_t lshift, Slice b) {
-	if (a.size == 0) {
-		if (b.size > 0) return -1;
-		return 0;
-	}
-	if (a.size + lshift > b.size) return 1;
-	if (a.size + lshift < b.size) return -1;
-	size_t i = b.size - 1;
-	while (1) {
-		if (a.data[i - lshift] > b.data[i]) return 1;
-		if (a.data[i - lshift] < b.data[i]) return -1;
-		if (i == lshift) break;
-		i--;
-	}
-	while (1) {
-		if (i == 0) return 0;
-		i--;
-		if (b.data[i] > 0) return -1;
-	}
-}
-
-// compare (a << lshift) with b
-// see cmpd() for info about diff_point
-// NOTE: lshift by number of blocks not bits
-static int cmpd_lshifted(Slice a, size_t lshift, Slice b, size_t* diff_point) {
-	if (a.size == 0) {
-		if (b.size > 0) {
-			*diff_point = b.size;
-			return -1;
-		}
-		*diff_point = 0;
-		return 0;
-	}
-	if (a.size + lshift > b.size) {
-		*diff_point = a.size + lshift;
-		return 1;
-	}
-	if (a.size + lshift < b.size) {
-		*diff_point = b.size;
-		return -1;
-	}
-	size_t i = b.size - 1;
-	while (1) {
-		if (a.data[i - lshift] > b.data[i]) {
-			*diff_point = i + 1;
-			return 1;
-		}
-		if (a.data[i - lshift] < b.data[i]) {
-			*diff_point = i + 1;
-			return -1;
-		}
-		if (i == lshift) {
-			break;
-		}
-		i--;
-	}
-	while (1) {
-		if (i == 0) {
-			*diff_point = 0;
-			return 0;
-		}
-		i--;
-		if (b.data[i] > 0) {
-			*diff_point = i + 1;
-			return -1;
-		}
-	}
-}
-
 /*
  * compares the absolute values of a and b
  * 
@@ -592,509 +308,6 @@ int bigint_cmp_small(ConstBigInt a, SmallInt b) {
 	if (a->size == 0) return b;
 	if (a->size > 1) return (a->sign) ? -1 : 1;
 	return bigint_small(a) - b;
-}
-
-static void print_slice(Slice a) {
-	if (a.size == 0) {
-		printf("0");
-		return;
-	}
-	printf(FORMAT_HEX, a.data[a.size - 1]);
-	a.size--;
-	while(a.size > 0) {
-		printf(" " FORMAT_0HEX, a.data[a.size - 1]);
-		a.size--;
-	}
-}
-
-static inline size_t size_without_zeros(const DataBlock* a, size_t size) {
-	while (size > 0) {
-		if (a[size - 1] != 0) break;
-		size--;
-	}
-	return size;
-}
-
-static inline Slice split(Slice* slice, size_t size) {
-	Slice second;
-	if (slice->size > size) {
-		second.data = slice->data + size;
-		second.size = size_without_zeros(second.data, slice->size - size);
-		slice->size = size_without_zeros(slice->data, size);
-	} else {
-		second.data = NULL;
-		second.size = 0;
-	}
-	return second;
-}
-
-// a.size must be >= b.size
-static size_t add_a(Slice a, Slice b, DataBlock* out, bool assign_carry) {
-	assert(a.size >= b.size);
-	assert(a.size == size_without_zeros(a.data, a.size));
-	assert(b.size == size_without_zeros(b.data, b.size));
-	int carry = 0;
-	size_t i = 0;
-	for (; i < b.size; i++) {
-		carry = ADDCARRY(carry, a.data[i], b.data[i], &out[i]);
-	}
-	for (; i < a.size; i++) {
-		carry = ADDCARRY(carry, a.data[i], 0, &out[i]);
-	}
-	if (assign_carry && carry) out[a.size] = carry;
-	return a.size + carry;
-}
-
-static size_t add(Slice a, Slice b, DataBlock* out, bool assign_carry) {
-	if (a.size >= b.size) {
-		return add_a(a, b, out, assign_carry);
-	}
-	else {
-		return add_a(b, a, out, assign_carry);
-	}
-}
-
-// out = (a << lshift) + b;
-// NOTE: lshift by number of blocks not bits
-static size_t add_lshifted(Slice a, size_t lshift, Slice b, DataBlock* out, bool assign_carry) {
-	if (a.size == 0) {
-		memmove(out, b.data, b.size * sizeof(DataBlock));
-		return b.size;
-	}
-	if (b.size <= lshift) {
-		memmove(out, b.data, b.size * sizeof(DataBlock));
-		memset(out + b.size, 0, (lshift - b.size) * sizeof(DataBlock));
-		memmove(out + lshift, a.data, a.size * sizeof(DataBlock));
-		return a.size + lshift;
-	}
-	memmove(out, b.data, lshift * sizeof(DataBlock));
-	int carry = 0;
-	size_t i = lshift;
-	if (a.size + lshift > b.size) {
-		for (; i < b.size; i++) {
-			carry = ADDCARRY(carry, a.data[i - lshift], b.data[i], &out[i]);
-		}
-		for (; i < a.size + lshift; i++) {
-			carry = ADDCARRY(carry, a.data[i - lshift], 0, &out[i]);
-		}
-		if (assign_carry && carry) out[a.size + lshift] = carry;
-		return a.size + lshift + carry;
-	} else {
-		for (; i < a.size + lshift; i++) {
-			carry = ADDCARRY(carry, a.data[i - lshift], b.data[i], &out[i]);
-		}
-		for (; i < b.size; i++) {
-			carry = ADDCARRY(carry, b.data[i], 0, &out[i]);
-		}
-		if (assign_carry && carry) out[b.size] = carry;
-		return b.size + carry;
-	}
-}
-
-// out = a - b;
-// a must be >= b
-static size_t usub(Slice a, Slice b, DataBlock* out) {
-	assert(cmp(a, b) >= 0);
-	assert(a.size == size_without_zeros(a.data, a.size));
-	assert(b.size == size_without_zeros(b.data, b.size));
-	unsigned char borrow = 0;
-	size_t i = 0;
-	for (; i < b.size; i++) {
-		borrow = SUBBORROW(borrow, a.data[i], b.data[i], &out[i]);
-	}
-	for (; i < a.size; i++) {
-		borrow = SUBBORROW(borrow, a.data[i], 0, &out[i]);
-	}
-	return size_without_zeros(out, a.size);
-}
-
-// usub_nlz - unsigned subtraction, no leading zeros;
-// out = a - b;
-// does not assign leading zeros;
-// a must be >= b
-static size_t usub_nlz(Slice a, Slice b, DataBlock* out) {
-	assert(cmp(a, b) >= 0);
-	assert(a.size == size_without_zeros(a.data, a.size));
-	assert(b.size == size_without_zeros(b.data, b.size));
-	unsigned char borrow = 0;
-	size_t i = 0;
-	size_t zeros = 0;
-	for (; i < b.size; i++) {
-		borrow = subborrow_nlz(borrow, a.data[i], b.data[i], &out[i], &zeros);
-	}
-	for (; i < a.size; i++) {
-		borrow = subborrow_nlz(borrow, a.data[i], 0, &out[i], &zeros);
-	}
-	return i - zeros;
-}
-
-// out = a - b;
-// a and b are unsigned but output can be negative;
-// nlz (no leading zeros): if true uses usub_nlz, if false uses usub
-static size_t sub(Slice a, Slice b, DataBlock* out, bool* out_sign, bool nlz) {
-	size_t diff_point;
-	int cmp_res = cmpd(a, b, &diff_point);
-	if (cmp_res == 0) {
-		if (out_sign) *out_sign = 0;
-		return 0;
-	}
-	split(&a, diff_point);
-	split(&b, diff_point);
-	if (a.size == 0) {
-		*out_sign = 1;
-		memmove(out, b.data, b.size * sizeof(DataBlock));
-		return b.size;
-	}
-	if (b.size == 0) {
-		*out_sign = 0;
-		memmove(out, a.data, a.size * sizeof(DataBlock));
-		return a.size;
-	}
-	if (cmp_res > 0) {
-		if (out_sign) *out_sign = 0;
-		size_t size = nlz ? usub_nlz(a, b, out) : usub(a, b, out);
-		assert(size == size_without_zeros(out, size));
-		return size;
-	} else {
-		if (out_sign) *out_sign = 1;
-		size_t size = nlz ? usub_nlz(b, a, out) : usub(b, a, out);
-		assert(size == size_without_zeros(out, size));
-		return size;
-	}
-}
-
-// out = (a << lshift) - b;
-// Requirements: (a << lshift) >= b;
-// NOTE: lshift by number of blocks not bits
-static size_t usub_lshifted(Slice a, size_t lshift, Slice b, DataBlock* out) {
-	assert(cmp_lshifted(a, lshift, b) >= 0);
-	unsigned char borrow = 0;
-	size_t i = 0;
-	if (b.size <= lshift) {
-		for (; i < b.size; i++) {
-			borrow = SUBBORROW(borrow, 0, b.data[i], &out[i]);
-		}
-		for (; i < lshift; i++) {
-			borrow = SUBBORROW(borrow, 0, 0, &out[i]);
-		}
-	} else {
-		for (; i < lshift; i++) {
-			borrow = SUBBORROW(borrow, 0, b.data[i], &out[i]);
-		}
-		for (; i < b.size; i++) {
-			borrow = SUBBORROW(borrow, a.data[i - lshift], b.data[i], &out[i]);
-		}
-	}
-	for (; i < a.size + lshift; i++) {
-		borrow = SUBBORROW(borrow, a.data[i - lshift], 0, &out[i]);
-	}
-	return size_without_zeros(out, i);
-}
-
-// out = (a << lshift) - b;
-// assigns no leading zeros;
-// Requirements: (a << lshift) >= b;
-// NOTE: lshift by number of blocks not bits
-static size_t usub_lshifted_nlz(Slice a, size_t lshift, Slice b, DataBlock* out) {
-	assert(cmp_lshifted(a, lshift, b) >= 0);
-	unsigned char borrow = 0;
-	size_t i = 0;
-	size_t zeros = 0;
-	if (b.size <= lshift) {
-		for (; i < b.size; i++) {
-			borrow = subborrow_nlz(borrow, 0, b.data[i], &out[i], &zeros);
-		}
-		for (; i < lshift; i++) {
-			borrow = subborrow_nlz(borrow, 0, 0, &out[i], &zeros);
-		}
-	} else {
-		for (; i < lshift; i++) {
-			borrow = subborrow_nlz(borrow, 0, b.data[i], &out[i], &zeros);
-		}
-		for (; i < b.size; i++) {
-			borrow = subborrow_nlz(borrow, a.data[i - lshift], b.data[i], &out[i], &zeros);
-		}
-	}
-	for (; i < a.size + lshift; i++) {
-		borrow = subborrow_nlz(borrow, a.data[i - lshift], 0, &out[i], &zeros);
-	}
-	return i - zeros;
-}
-
-// out = a - (b << lshift);
-// a must be >= (b << lshift);
-// NOTE: lshift by number of blocks not bits
-static size_t usub_b_lshifted(Slice a, Slice b, size_t lshift, DataBlock* out) {
-	assert(cmp_lshifted(b, lshift, a) <= 0);
-	memmove(out, a.data, lshift * sizeof(DataBlock));
-	unsigned char borrow = 0;
-	size_t i = lshift;
-	for (; i < b.size + lshift; i++) {
-		borrow = SUBBORROW(borrow, a.data[i], b.data[i - lshift], &out[i]);
-	}
-	for (; i < a.size; i++) {
-		borrow = SUBBORROW(borrow, a.data[i], 0, &out[i]);
-	}
-	return size_without_zeros(out, i);
-}
-
-// out = a - (b << lshift);
-// assigns no leading zeros;
-// a must be >= (b << lshift);
-// NOTE: lshift by number of blocks not bits
-static size_t usub_b_lshifted_nlz(Slice a, Slice b, size_t lshift, DataBlock* out) {
-	assert(cmp_lshifted(b, lshift, a) <= 0);
-	memmove(out, a.data, lshift * sizeof(DataBlock));
-	unsigned char borrow = 0;
-	size_t i = lshift;
-	size_t zeros = 0;
-	for (; i < b.size + lshift; i++) {
-		borrow = subborrow_nlz(borrow, a.data[i], b.data[i - lshift], &out[i], &zeros);
-	}
-	for (; i < a.size; i++) {
-		borrow = subborrow_nlz(borrow, a.data[i], 0, &out[i], &zeros);
-	}
-	return i - zeros;
-}
-
-static size_t sub_lshifted(Slice a, size_t lshift, Slice b, DataBlock* out, bool* out_sign, bool nlz) {
-	size_t diff_point;
-	int cmp_res = cmpd_lshifted(a, lshift, b, &diff_point);
-	if (cmp_res == 0) {
-		if (out_sign) *out_sign = 0;
-		return 0;
-	}
-	split(&b, diff_point);
-	if (diff_point > lshift) {
-		split(&a, diff_point - lshift);
-	} else {
-		a.size = 0;
-	}
-	if (a.size == 0) {
-		*out_sign = 1;
-		memmove(out, b.data, b.size * sizeof(DataBlock));
-		return b.size;
-	}
-	if (b.size == 0) {
-		*out_sign = 0;
-		memset(out, 0, lshift * sizeof(DataBlock));
-		memmove(out + lshift, a.data, a.size * sizeof(DataBlock));
-		return a.size + lshift;
-	}
-	if (cmp_res > 0) {
-		if (out_sign) *out_sign = 0;
-		size_t size = nlz
-			? usub_lshifted_nlz(a, lshift, b, out)
-			: usub_lshifted(a, lshift, b, out);
-		assert(size == size_without_zeros(out, size));
-		return size;
-	} else {
-		if (out_sign) *out_sign = 1;
-		size_t size = nlz
-			? usub_b_lshifted_nlz(b, a, lshift, out)
-		    : usub_b_lshifted(b, a, lshift, out);
-		assert(size == size_without_zeros(out, size));
-		return size;
-	}
-}
-
-static size_t add_signed(Slice a, bool a_sign, Slice b, bool b_sign,
-		DataBlock* out, bool* out_sign, bool assign_carry, bool nlz) {
-	if (a_sign == b_sign) {
-		*out_sign = a_sign;
-		return add(a, b, out, assign_carry);
-	}
-	size_t size = sub(a, b, out, out_sign, nlz);
-	*out_sign ^= a_sign;
-	return size;
-}
-
-// (a << lshift) + b, signed
-// NOTE: lshift by number of blocks not bits
-static size_t add_lshifted_signed(Slice a, size_t lshift, bool a_sign,
-		Slice b, bool b_sign, DataBlock* out, bool* out_sign, bool assign_carry, bool nlz) {
-	if (a_sign == b_sign) {
-		*out_sign = a_sign;
-		return add_lshifted(a, lshift, b, out, assign_carry);
-	}
-	size_t size = sub_lshifted(a, lshift, b, out, out_sign, nlz);
-	*out_sign ^= a_sign;
-	return size;
-}
-
-static size_t mul_basic(Slice a, Slice b, DataBlock* out) {
-	if (a.size == 0 || b.size == 0) return 0;
-	const size_t max_size = a.size + b.size;
-	memset(out, 0, max_size * sizeof(DataBlock));
-	for (size_t i = 0; i < a.size; i++) {
-		DataBlock d1 = a.data[i];
-		for (size_t j = 0; j < b.size; j++) {
-			DataBlock d2 = b.data[j];
-			DataBlock high;
-			DataBlock low = block_mul(d1, d2, &high);
-			unsigned char carry;
-			carry = ADDCARRY(0, out[i + j], low, &out[i + j]);
-			carry = ADDCARRY(carry, out[i + j + 1], high, &out[i + j + 1]);
-			size_t idx = i + j + 2;
-			while (carry) {
-				carry = ADDCARRY(carry, out[idx], 0, &out[idx]);
-				idx++;
-			}
-		}
-	}
-	return size_without_zeros(out, max_size);
-}
-
-
-static size_t karatsuba(Slice b, Slice d, size_t n, DataBlock* out, DataBlock* buffer);
-
-static size_t mul(Slice a, Slice b, DataBlock* out, DataBlock* buffer) {
-	assert(size_without_zeros(a.data, a.size) == a.size);
-	assert(size_without_zeros(b.data, b.size) == b.size);
-	if (a.size == 0 || b.size == 0) return 0;
-	const int n = a.size > b.size ? a.size : b.size;
-	if (n >= BIGINT_KARATSUBA_THRESHOLD) {
-/*
-		for (size_t i = a.size; i > 0; i--) {
-			printf(FORMAT_HEX " ", b.data[i - 1]);
-		} printf ("* ");
-		for (size_t i = b.size; i > 0; i--) {
-			printf(FORMAT_HEX " ", b.data[i - 1]);
-		} printf ("= ");
-*/
-		size_t size = karatsuba(a, b, n, out, buffer);
-		assert(size_without_zeros(out, size) == size);
-/*
-		for (size_t i = size; i > 0; i--) {
-			printf(FORMAT_HEX " ", out[i - 1]);
-		} printf ("\n");
-*/
-		return size;
-	}
-	return mul_basic(a, b, out);
-}
-
-// returns buffer size required for karatsuba in bytes
-static inline size_t karatsuba_buffer_size(size_t n) {
-	size_t sum = 0;
-	constexpr size_t threshold = 2 > BIGINT_KARATSUBA_THRESHOLD
-		? 2 : BIGINT_KARATSUBA_THRESHOLD;
-	while (n >= threshold) {
-		if (n & 1) n += 1;
-		sum += n;
-		n >>= 1;
-	}
-	return sum * sizeof(DataBlock);
-}
-
-// Karatsuba multiplication
-// @params:
-// b - first number (or slice of a number);
-// d - second number (or slice);
-// n - max(b.size, d.size);
-// out - filled with b * d, must be allocated outside
-//       (at least (b.size + d.size) * sizeof(DataBlock) bytes);
-// buffer - memory for storing intermediate calculations
-//          (karatsuba_buffer_size() * sizeof(DataBlock) bytes)
-// @return size of out
-//
-// Note: a slightly modified formula -
-// (a-b)(d-c)+ac+bd is used for the middle part because
-// (a+b) and (c+d) can overflow
-static size_t karatsuba(Slice b, Slice d, size_t n, DataBlock* out, DataBlock* buffer) {
-	if(b.size == 0 || d.size == 0) return 0;
-	assert(b.size == size_without_zeros(b.data, b.size));
-	assert(d.size == size_without_zeros(d.data, d.size));
-	assert(n);
-
-	if (n == 1) {
-		DataBlock high = 0;
-		out[0] = block_mul(b.data[0], d.data[0], &high);
-		assert(high || out[0]);
-		if (high) {
-			out[1] = high;
-			return 2;
-		} else {
-			return 1;
-		}
-	}
-
-	const size_t m = (n + 1) / 2;
-	assert(m);
-	assert(m <= n);
-	const Slice a = split(&b, m);
-	const Slice c = split(&d, m);
-
-	const size_t ab_cap = m;
-	const size_t dc_cap = m;
-	const size_t abcd_cap = 2 * m;
-	const size_t ac_cap = 2 * (n - m);
-	const size_t bd_cap = 2 * m;
-
-	DataBlock* const abcd_ptr = out;
-	DataBlock* const ab_ptr = buffer;
-	DataBlock* const dc_ptr = buffer + m;
-	DataBlock* const ac_ptr = buffer;
-	DataBlock* const bd_ptr = buffer;
-	DataBlock* const buf_ptr = buffer + 2 * m;
-
-	bool ab_sign;
-	bool dc_sign;
-	bool abcd_sign;
-	
-	const Slice a_minus_b = {
-		.data = ab_ptr,
-		.size = sub(a, b, ab_ptr, &ab_sign, false)
-	};
-	assert(a_minus_b.size <= ab_cap);
-	assert(a_minus_b.size == size_without_zeros(a_minus_b.data, a_minus_b.size));
-
-	const Slice d_minus_c = {
-		.data = dc_ptr,
-		.size = sub(d, c, dc_ptr, &dc_sign, false)
-	};
-	assert(d_minus_c.size <= dc_cap);
-	assert(d_minus_c.size == size_without_zeros(d_minus_c.data, d_minus_c.size));
-
-	abcd_sign = ab_sign ^ dc_sign;
-
-	// abcd = (a-b)(d-c)
-	Slice abcd = {
-		.data = abcd_ptr,
-		.size = mul(a_minus_b, d_minus_c, abcd_ptr, buf_ptr)
-	};
-	assert(abcd.size <= abcd_cap);
-	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
-
-	const Slice a_times_c = { 
-		.data = ac_ptr,
-		.size = mul(a, c, ac_ptr, buf_ptr)
-	};
-	assert(a_times_c.size <= ac_cap);
-	assert(a_times_c.size == size_without_zeros(a_times_c.data, a_times_c.size));
-
-	// abcd = abcd + ac
-	abcd.size = add_signed(abcd, abcd_sign, a_times_c, 0, abcd_ptr, &abcd_sign, true, true);
-	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
-	// abcd = (a_times_c << m) + abcd
-	abcd.size = add_lshifted_signed(a_times_c, m, 0, abcd, abcd_sign, abcd_ptr, &abcd_sign, true, true);
-	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
-
-	const Slice b_times_d = {
-		.data = bd_ptr,
-		.size = mul(b, d, bd_ptr, buf_ptr)
-	};
-	assert(b_times_d.size <= bd_cap);
-	assert(b_times_d.size == size_without_zeros(b_times_d.data, b_times_d.size));
-
-	// abcd = abcd + bd
-	abcd.size = add_signed(abcd, abcd_sign, b_times_d, 0, abcd_ptr, &abcd_sign, true, true);
-	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
-	// move abcd from out to out + m
-	memmove(out + m, out, abcd.size * sizeof(DataBlock));
-	abcd.data += m;
-	// (abcd << m) + bd
-	return add_lshifted_signed(abcd, m, abcd_sign, b_times_d, 0, out, &abcd_sign, true, true);
 }
 
 // |out| = |a| + |b|
@@ -1148,7 +361,7 @@ BigInt bigint_usub(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 	BigInt out;
 	if (!(out = bigint_realloc_if_small(out_ptr, a->size, false))) return NULL;
 	bool sign;
-	out->size = sub(A, B, out->data, &sign, false);
+	out->size = sub(A, B, out->data, &sign);
 	return out;
 }
 
@@ -1174,8 +387,7 @@ BigInt bigint_add(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 			(*out_ptr)->sign = b->sign;
 		}
 		else { // |a| = |b|
-			if(*out_ptr == NULL) *out_ptr = bigint_create_zero();
-			else bigint_set_zero(out_ptr);
+			bigint_set_zero(out_ptr);
 		}
 	}
 
@@ -1204,8 +416,7 @@ BigInt bigint_sub(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 			(*out_ptr)->sign = !a->sign;
 		}
 		else { // |a| = |b|
-			if(*out_ptr == NULL) *out_ptr = bigint_create_zero();
-			else bigint_set_zero(out_ptr);
+			bigint_set_zero(out_ptr);
 		}
 	}
 
@@ -1252,18 +463,16 @@ BigInt bigint_umul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 	if (bufsize > ctx.bufsize) {
 		ctx.buf = realloc(ctx.buf, bufsize);
 	}
-	out->size = karatsuba(A, B, n, out->data, ctx.buf);
+	out->size = mul(A, B, out->data, ctx.buf);
 	assert(out->size <= cap);
 	assert(out->size == size_without_zeros(out->data, out->size));
-	/*
-	BigInt check = bigint_alloc(cap);
-	check->size = mul_basic(A, B, check->data);
-	assert(bigint_cmp(out, check) == 0 || ({
-				bigint_printf("%px, %px\n", out, check);
-				0;
-			}));
-	bigint_free(check);
-	*/
+	assert(({
+		BigInt check = bigint_alloc(cap);
+		check->size = mul_basic(A, B, check->data);
+		int cmp_res = bigint_cmp(out, check);
+		bigint_free(check);
+		cmp_res == 0;
+	}));
 
 	bigint_free(to_be_freed);
 	return *out_ptr = out;
@@ -1618,7 +827,7 @@ int bigint_fread(FILE* file, BigInt* z_ptr, bool is_signed) {
 	return 0;
 }
 
-FormatSpec bigint_initBIFS() {
+FormatSpec bigint_initBIFS(void) {
 	return (FormatSpec) { 0 };
 }
 
@@ -1686,7 +895,7 @@ int _bigint_fprintf(FILE* file, const char* const format, va_list args) {
 					break;
 
 				case '%':
-					int err = putc('%', file);
+					res = putc('%', file);
 					if (res < 0) {
 						ELOG_CODE_STR(errno, "putc failed");
 						return res;
@@ -1760,7 +969,6 @@ char* bigint_hex_str(ConstBigInt z, FormatSpec bifs) {
 	const char* const f_hex = bifs.uppercase ? FORMAT_HEX : FORMAT_hex;
 
 	size_t offset = 0;
-	size_t res;
 
 	if (add_minus_sign) {
 		str[offset++] = '-';
@@ -1824,9 +1032,11 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 	BigInt ten = bigint_create_usmall(10);
 	if (!ten) return NULL;
 	BigInt rem = NULL;
+	BigInt tmp = NULL;
 
 	while (a->size > 0) {
-		bigint_udiv(a, ten, &a, &rem);
+		bigint_copy(&tmp, a);
+		bigint_udiv(tmp, ten, &a, &rem);
 		assert(cnt < max_digits + max_spaces);
 		digits[cnt++] = bigint_usmall(rem) + '0';
 		if (bifs.add_spaces &&
@@ -1840,6 +1050,7 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 	bigint_free(a);
 	bigint_free(ten);
 	bigint_free(rem);
+	bigint_free(tmp);
 
 	for (size_t i = 0; i < cnt / 2; i++) {
 		char tmp = digits[i];
@@ -1942,6 +1153,8 @@ BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr) {
 	BigInt digit = bigint_alloc(cap);
 	if (!digit) return NULL;
 
+	BigInt tmp = NULL;
+
 	size_t i = str_len;
 	while (i > 0) {
 		i--;
@@ -1955,14 +1168,19 @@ BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr) {
 		}
 
 		bigint_set_usmall(&digit, value);
-		bigint_umul(digit, pow10, &digit);
-		bigint_uadd(out, digit, &out);
+		bigint_copy(&tmp, digit);
+		bigint_umul(tmp, pow10, &digit);
+		bigint_copy(&tmp, out);
+		bigint_uadd(tmp, digit, &out);
 
-		bigint_umul(pow10, ten, &pow10);
+		bigint_copy(&tmp, pow10);
+		bigint_umul(tmp, ten, &pow10);
 	}
 	bigint_free(pow10);
 	bigint_free(ten);
 	bigint_free(digit);
+	bigint_free(tmp);
 
 	return out;
 }
+

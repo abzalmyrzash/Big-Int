@@ -1,7 +1,8 @@
+#pragma once
 #include <stdint.h>
 
 // width (size in bits) of fields in struct bigint
-#define BIGINT_BLOCK_WIDTH 8   // width of one data block
+#define BIGINT_BLOCK_WIDTH 64  // width of one data block
 #define BIGINT_CAP_WIDTH   32  // width of capacity field; also equal to size width
 #define BIGINT_POINT_WIDTH 32  // width of point field
 
@@ -12,7 +13,7 @@
 // maximum capacity
 #define BIGINT_MAX_CAP     (uint64_t)~0ULL >> (64 - BIGINT_CAP_WIDTH)
 
-#define BIGINT_KARATSUBA_THRESHOLD 0
+#define BIGINT_KARATSUBA_THRESHOLD 9
 
 // pack the bigint struct
 // #define BIGINT_PACKED 

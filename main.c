@@ -1,4 +1,5 @@
 #include "bigint.h"
+#include "bigint_rand.h"
 #include "fib.h"
 #include "factorial.h"
 #include <assert.h>
@@ -10,6 +11,31 @@ int run(BigInt (*f)(unsigned int, BigInt*));
 
 int main()
 {
+	bigint_init();
+	BigInt A = NULL;
+	BigInt B = NULL;
+	bigint_rand(&A, 1'000'000);
+	bigint_rand(&B, 1'000'000);
+	printf("%zu %zu\n", bigint_size(A), bigint_size(B));
+	BigInt C = bigint_alloc(bigint_size(A) + bigint_size(B));
+	bigint_memstat();
+	clock_t start = clock();
+	for (int i = 0; i < 1; i++) {
+		bigint_mul(A, B, &C);
+	}
+	float time = (float)(clock() - start) / CLOCKS_PER_SEC;
+	printf("Time: %f seconds\n", time);
+	bigint_free(A);
+	bigint_free(B);
+	bigint_free(C);
+	bigint_memstat();
+	/*
+	bigint_printf("%p0_x\n%d\n\n", A, A);
+	bigint_printf("%p0_x\n%d\n\n", B, B);
+	bigint_printf("%p0_x\n%d\n\n", C, C);
+	*/
+	return 0;
+/*
 	bigint_init();
 
 	BigInt A = NULL;
@@ -75,17 +101,17 @@ int main()
 	bigint_memstat();
 	bigint_finish();
 	return 0;
-
-	run(bigFib);
+*/
+	run(bigFactorial);
 }
 
 int run(BigInt (*f)(unsigned int, BigInt*)) {
-	bigint_structinfo();
+	bigint_init();
 	BigInt res = bigint_alloc(10000);
 	while(1) {
 		int n;
 		scanf("%d", &n);
-		if (n < 0) return 0;
+		if (n < 0) break;
 
 		clock_t start = clock();
 		f(n, &res);
@@ -119,5 +145,7 @@ int run(BigInt (*f)(unsigned int, BigInt*)) {
 		printf("\n");
 	}
 	bigint_free(res);
+	bigint_memstat();
+	bigint_finish();
 	return 0;
 }

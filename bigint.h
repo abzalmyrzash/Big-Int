@@ -22,16 +22,17 @@ typedef struct {
 	bool uppercase;
 } BigInt_FormatSpec;
 
-void bigint_init();
-void bigint_finish();
+void bigint_init(void);
+void bigint_finish(void);
 
 BigInt bigint_alloc(size_t cap);
 BigInt bigint_zalloc(size_t cap);
 BigInt bigint_realloc(BigInt* z, size_t cap, bool keep_data);
+BigInt bigint_realloc_if_small(BigInt* z, size_t cap, bool keep_data);
 
 void bigint_free(BigInt z);
-void bigint_structinfo();
-void bigint_memstat();
+void bigint_structinfo(void);
+void bigint_memstat(void);
 
 size_t bigint_size(ConstBigInt z);
 size_t bigint_cap(ConstBigInt z);
