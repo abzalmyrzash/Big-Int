@@ -36,7 +36,6 @@ void bigint_memstat(void);
 
 size_t bigint_size(ConstBigInt z);
 size_t bigint_cap(ConstBigInt z);
-size_t bigint_point(ConstBigInt z);
 bool   bigint_sign(ConstBigInt z);
 const BigInt_DataBlock* bigint_data(ConstBigInt z);
 

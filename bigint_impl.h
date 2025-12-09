@@ -69,6 +69,11 @@ constexpr int HEX_PREFIX_LEN = sizeof(HEX_PREFIX) - 1;
 	#define FORMAT_0hex  "%02" PRIx8
 #endif
 
+static inline USmallInt ABS(SmallInt v) {
+	if (v < 0) return ~(USmallInt)v + 1;
+	return (USmallInt)v;
+}
+
 // returns the low part of a * b, high part in *high
 static inline DataBlock block_mul(DataBlock a, DataBlock b, DataBlock* high) {
 	BigMult mul = (BigMult)a * b;
@@ -169,6 +174,19 @@ static Slice split(Slice* slice, size_t size) {
 		second.size = 0;
 	}
 	return second;
+}
+
+static inline size_t set_usmall(DataBlock* data, USmallInt small) {
+	if (small == 0) return 0;
+	data[0] = small;
+	return 1;
+}
+
+static inline size_t set_small(DataBlock* data, bool* sign, USmallInt small) {
+	if (small == 0) return 0;
+	*sign = small < 0;
+	data[0] = ABS(small);
+	return 1;
 }
 
 // a.size must be >= b.size
@@ -413,7 +431,9 @@ static size_t karatsuba(Slice b, Slice d, size_t n, DataBlock* out, DataBlock* b
 // returns buffer size required for karatsuba in bytes
 static inline size_t karatsuba_buffer_size(size_t n) {
 	size_t sum = 0;
-	while (n > 1) {
+	static constexpr size_t threshold =
+		BIGINT_KARATSUBA_THRESHOLD > 2 ? BIGINT_KARATSUBA_THRESHOLD : 2;
+	while (n >= threshold) {
 		if (n & 1) n += 1;
 		sum += n;
 		n >>= 1;
@@ -480,70 +500,64 @@ static size_t karatsuba(Slice b, Slice d, size_t n, DataBlock* out, DataBlock* b
 	const Slice a = split(&b, m);
 	const Slice c = split(&d, m);
 
-	const size_t ab_cap = m;
-	const size_t dc_cap = m;
-	const size_t abcd_cap = 2 * m;
-	const size_t ac_cap = 2 * (n - m);
-	const size_t bd_cap = 2 * m;
-
-	DataBlock* const abcd_ptr = out;
-	DataBlock* const ab_ptr = buffer;
-	DataBlock* const dc_ptr = buffer + m;
-	DataBlock* const ac_ptr = buffer;
-	DataBlock* const bd_ptr = buffer;
-	DataBlock* const buf_ptr = buffer + 2 * m;
+	DataBlock* const abcd_data = out;
+	DataBlock* const ab_data = buffer;
+	DataBlock* const dc_data = buffer + m;
+	DataBlock* const ac_data = buffer;
+	DataBlock* const bd_data = buffer;
+	DataBlock* const buf_data = buffer + 2 * m;
 
 	bool ab_sign;
 	bool dc_sign;
 	bool abcd_sign;
 	
 	const Slice a_minus_b = {
-		.data = ab_ptr,
-		.size = sub(a, b, ab_ptr, &ab_sign)
+		.data = ab_data,
+		.size = sub(a, b, ab_data, &ab_sign)
 	};
-	assert(a_minus_b.size <= ab_cap);
+	assert(a_minus_b.size <= m);
 	assert(a_minus_b.size == size_without_zeros(a_minus_b.data, a_minus_b.size));
 
 	const Slice d_minus_c = {
-		.data = dc_ptr,
-		.size = sub(d, c, dc_ptr, &dc_sign)
+		.data = dc_data,
+		.size = sub(d, c, dc_data, &dc_sign)
 	};
-	assert(d_minus_c.size <= dc_cap);
+	assert(d_minus_c.size <= m);
 	assert(d_minus_c.size == size_without_zeros(d_minus_c.data, d_minus_c.size));
 
 	abcd_sign = ab_sign ^ dc_sign;
 
 	// abcd = (a-b)(d-c)
 	Slice abcd = {
-		.data = abcd_ptr,
-		.size = mul(a_minus_b, d_minus_c, abcd_ptr, buf_ptr)
+		.data = abcd_data,
+		.size = mul(a_minus_b, d_minus_c, abcd_data, buf_data)
 	};
-	assert(abcd.size <= abcd_cap);
+	assert(abcd.size <= 2 * m);
 	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
 
 	const Slice a_times_c = { 
-		.data = ac_ptr,
-		.size = mul(a, c, ac_ptr, buf_ptr)
+		.data = ac_data,
+		.size = mul(a, c, ac_data, buf_data)
 	};
-	assert(a_times_c.size <= ac_cap);
+	assert(a_times_c.size <= 2 * (n - m));
 	assert(a_times_c.size == size_without_zeros(a_times_c.data, a_times_c.size));
 
 	// abcd = abcd + ac
-	abcd.size = add_signed(abcd, abcd_sign, a_times_c, 0, abcd_ptr, &abcd_sign, true);
+	abcd.size = add_signed(abcd, abcd_sign, a_times_c, 0, abcd_data, &abcd_sign, true);
 	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
 	// abcd = (a_times_c << m) + abcd
-	abcd.size = add_lshifted_signed(a_times_c, m, 0, abcd, abcd_sign, abcd_ptr, &abcd_sign, true);
+	abcd.size = add_lshifted_signed(a_times_c, m, 0, abcd, abcd_sign, abcd_data, &abcd_sign, true);
 	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
 
 	const Slice b_times_d = {
-		.data = bd_ptr,
-		.size = mul(b, d, bd_ptr, buf_ptr)
+		.data = bd_data,
+		.size = mul(b, d, bd_data, buf_data)
 	};
-	assert(b_times_d.size <= bd_cap);
+	assert(b_times_d.size <= 2 * m);
 	assert(b_times_d.size == size_without_zeros(b_times_d.data, b_times_d.size));
 
 	// abcd = abcd + bd
-	abcd.size = add_signed(abcd, abcd_sign, b_times_d, 0, abcd_ptr, &abcd_sign, true);
+	abcd.size = add_signed(abcd, abcd_sign, b_times_d, 0, abcd_data, &abcd_sign, true);
 	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
 	// move abcd from out to out + m
 	memmove(out + m, out, abcd.size * sizeof(DataBlock));
@@ -581,4 +595,171 @@ static size_t pow_mod(Slice a, Slice pow, Slice mod, DataBlock* out, DataBlock* 
 
 static size_t newton_reciprocal() {
 	
+}
+
+static size_t copy(Slice z, DataBlock* out) {
+	if (z.data != out) {
+		memmove(out, z.data, z.size * sizeof(DataBlock));
+	}
+	return z.size;
+}
+
+static size_t lshift_blocks(Slice z, size_t shift, DataBlock* out) {
+	if (z.size == 0) return 0;
+	if (shift == 0) return copy(z, out);
+	memset(out, 0, shift * sizeof(DataBlock));
+	memmove(out + shift, z.data, z.size * sizeof(DataBlock));
+	return z.size + shift;
+}
+
+static size_t rshift_blocks(Slice z, size_t shift, DataBlock* out) {
+	if (z.size <= shift) return 0;
+	memmove(out, z.data + shift, (z.size - shift) * sizeof(DataBlock));
+	return z.size - shift;
+}
+
+static size_t lshift(Slice z, size_t shift, DataBlock* out) {
+	if (z.size == 0) return 0;
+
+	const size_t shift_blocks = shift / BLOCK_WIDTH;
+	const size_t shift_bits = shift % BLOCK_WIDTH;
+	if (shift_bits == 0) return lshift_blocks(z, shift_blocks, out);
+
+	const DataBlock LOW_BITS = (1ULL << (BLOCK_WIDTH - shift_bits)) - 1;
+	const DataBlock HIGH_BITS = ~0ULL - LOW_BITS;
+
+	size_t out_size = z.size + shift_blocks;
+
+	size_t i = z.size - 1;
+	DataBlock hi, lo;
+
+	hi = z.data[i] & HIGH_BITS;
+	lo = z.data[i] & LOW_BITS;
+	if (hi) {
+		out_size++;
+		out[i + shift_blocks + 1] = hi >> (BLOCK_WIDTH - shift_bits);
+	}
+	out[i + shift_blocks] = lo << shift_bits;
+
+	if (i--) while (1) {
+		hi = z.data[i] & HIGH_BITS;
+		lo = z.data[i] & LOW_BITS;
+		out[i + shift_blocks] = lo << shift_bits;
+		out[i + shift_blocks + 1] |= hi >> (BLOCK_WIDTH - shift_bits);
+		if (i == 0) break;
+		i--;
+	}
+
+	memset(out, 0, shift_blocks * sizeof(DataBlock));
+	return out_size;
+}
+
+static size_t rshift(Slice z, size_t shift, DataBlock* out) {
+	size_t shift_blocks = shift / BLOCK_WIDTH;
+	size_t shift_bits = shift % BLOCK_WIDTH;
+	if (shift_bits == 0) return rshift_blocks(z, shift_blocks, out);
+
+	if (shift_blocks >= z.size) return 0;
+
+	size_t out_size = z.size - shift_blocks;
+	if (shift_bits >= BLOCK_WIDTH - CLZ((DataBlock)z.data[z.size - 1])) {
+		if (out_size <= 1) return 0;
+		out_size--;
+	}
+
+	const DataBlock LOW_BITS = (1ULL << shift_bits) - 1;
+	const DataBlock HIGH_BITS = ~0ULL - LOW_BITS;
+
+	size_t i;
+	DataBlock hi, lo;
+	for (i = 0; i < out_size - 1; i++) {
+		hi = z.data[i + shift_blocks] & HIGH_BITS;
+		lo = z.data[i + shift_blocks + 1] & LOW_BITS;
+		out[i] = (hi >> shift_bits) | lo << (BLOCK_WIDTH - shift_bits);
+	}
+
+	hi = z.data[i + shift_blocks] & HIGH_BITS;
+	if (i + shift_blocks + 1 < z.size)
+		lo = z.data[i + shift_blocks + 1] & LOW_BITS;
+	else lo = 0;
+	out[i] = (hi >> shift_bits) | lo << (BLOCK_WIDTH - shift_bits);
+
+	return out_size;
+}
+
+static inline void bit_set(DataBlock* z, size_t bitpos) {
+	z[bitpos / BLOCK_WIDTH] |= (1ULL << (bitpos % BLOCK_WIDTH));
+}
+
+static inline void bit_unset(DataBlock* z, size_t bitpos) {
+	z[bitpos / BLOCK_WIDTH] &= ~(1ULL << (bitpos % BLOCK_WIDTH));
+}
+
+static inline void bit_toggle(DataBlock* z, size_t bitpos) {
+	z[bitpos / BLOCK_WIDTH] ^= (1ULL << (bitpos % BLOCK_WIDTH));
+}
+
+static size_t div_basic(const Slice a, const Slice b, DataBlock* out, DataBlock* rem_data, CapField* rem_size, DataBlock* buffer) {
+	const size_t size_diff = a.size - b.size;
+	DataBlock* c_data = buffer;
+	Slice rem = {
+		.data = rem_data,
+		.size = copy(a, rem_data)
+	};
+	Slice c = {
+		.data = c_data,
+		.size = lshift_blocks(b, size_diff, c_data)
+	};
+
+	int cmp_res = cmp(rem, c);
+	if (cmp_res == 0) {
+		*rem_size = 0;
+		out[size_diff] = 1;
+		memset(out, 0, size_diff * sizeof(DataBlock));
+		return size_diff + 1;
+	}
+	if (cmp_res < 0 && size_diff == 0) {
+		*rem_size = rem.size;
+		return 0;
+	}
+
+	size_t bitpos;
+	size_t out_size;
+	const int c_clz = __builtin_clzg(c.data[c.size - 1]);
+	const int rem_clz = __builtin_clzg(rem.data[rem.size - 1]);
+	const int clz_diff = c_clz - rem_clz;
+
+	if (cmp_res < 0) {
+		assert(clz_diff <= 0);
+		out_size = size_diff;
+		memset(out, 0, out_size * sizeof(DataBlock));
+		c.size = rshift(c, -clz_diff, c_data);
+	} else {
+		assert(clz_diff >= 0);
+		out_size = size_diff + 1;
+		memset(out, 0, out_size * sizeof(DataBlock));
+		c.size = lshift(c, clz_diff, c_data);
+	}
+	bitpos = size_diff * BLOCK_WIDTH + clz_diff;
+
+	cmp_res = cmp(rem, c);
+	if (cmp_res < 0) {
+		c.size = rshift(c, 1, c_data);
+		bitpos--;
+	}
+	rem.size = usub(rem, c, rem_data);
+	bit_set(out, bitpos);
+
+	while(cmp(rem, b) >= 0) {
+		while (cmp(rem, c) < 0) {
+			c.size = rshift(c, 1, c_data);
+			assert(bitpos > 0);
+			bitpos--;
+		}
+		rem.size = usub(rem, c, rem_data);
+		bit_set(out, bitpos);
+	}
+	*rem_size = rem.size;
+
+	return out_size;
 }

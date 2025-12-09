@@ -11,16 +11,17 @@ int run(BigInt (*f)(unsigned int, BigInt*));
 
 int main()
 {
+	/*
 	bigint_init();
 	BigInt A = NULL;
 	BigInt B = NULL;
-	bigint_rand(&A, 1'000'000);
-	bigint_rand(&B, 1'000'000);
+	bigint_rand(&A, 10'000);
+	bigint_rand(&B, 10'000);
 	printf("%zu %zu\n", bigint_size(A), bigint_size(B));
 	BigInt C = bigint_alloc(bigint_size(A) + bigint_size(B));
 	bigint_memstat();
 	clock_t start = clock();
-	for (int i = 0; i < 1; i++) {
+	for (int i = 0; i < 10000; i++) {
 		bigint_mul(A, B, &C);
 	}
 	float time = (float)(clock() - start) / CLOCKS_PER_SEC;
@@ -29,13 +30,9 @@ int main()
 	bigint_free(B);
 	bigint_free(C);
 	bigint_memstat();
-	/*
-	bigint_printf("%p0_x\n%d\n\n", A, A);
-	bigint_printf("%p0_x\n%d\n\n", B, B);
-	bigint_printf("%p0_x\n%d\n\n", C, C);
-	*/
 	return 0;
-/*
+	*/
+
 	bigint_init();
 
 	BigInt A = NULL;
@@ -59,6 +56,8 @@ int main()
 	bigint_printf("%p0_x\n", B, B);
 	// bigint_printf("%0_d\n", B, B);
 	printf("Size: %zu\n", bigint_size(B));
+
+	res = bigint_alloc(bigint_size(A) + bigint_size(B));
 
 	bigint_add(A, B, &res);
 	printf("A + B = ");
@@ -101,7 +100,6 @@ int main()
 	bigint_memstat();
 	bigint_finish();
 	return 0;
-*/
 	run(bigFactorial);
 }
 

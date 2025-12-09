@@ -4,7 +4,6 @@
 
 typedef BigInt_DataBlock  DataBlock;
 typedef BigInt_CapField   CapField;
-typedef BigInt_PointField PointField;
 typedef BigInt_FormatSpec FormatSpec;
 typedef BigInt_Slice      Slice;
 

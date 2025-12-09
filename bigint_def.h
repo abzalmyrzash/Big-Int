@@ -3,16 +3,14 @@
 
 // size:  length of number in datablocks
 // cap:   number of datablocks allocated
-// point: position of the fractional point
 // sign:  0 means positive, 1 means negative
 struct bigint {
-	BigInt_CapField   size;
 	BigInt_CapField   cap;
-#ifdef BIGINT_SPLIT_POINT_AND_SIGN
-	BigInt_PointField point : BIGINT_POINT_WIDTH - 1;
-	BigInt_PointField sign  : 1;
+#ifdef BIGINT_SPLIT_SIZE_AND_SIGN
+	BigInt_CapField   size  : BIGINT_CAP_WIDTH - 1;
+	BigInt_CapField   sign  : 1;
 #else
-	BigInt_PointField point;
+	BigInt_CapField   size;
 	bool sign;
 #endif
 	BigInt_DataBlock  data[];

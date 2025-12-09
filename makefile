@@ -1,4 +1,4 @@
-CC_FLAGS := -Wall --std=c23
+CC_FLAGS := -g -Wall --std=c23
 CC := gcc
 
 build/main: main.c build/fib.o build/factorial.o build/bigint.o build/bigint_rand.o makefile
@@ -15,3 +15,6 @@ build/bigint_rand.o: bigint_rand.c bigint_rand.h build/bigint.o makefile
 
 build/bigint.o: bigint.c bigint.h bigint_impl.h bigint_params.h makefile
 	$(CC) $(CC_FLAGS) -c bigint.c -o build/bigint.o
+
+clean:
+	del build\*

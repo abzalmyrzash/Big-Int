@@ -7,6 +7,11 @@
 int bigint_errno = 0;
 
 static thread_local Context ctx;
+constexpr DataBlock VALUE_TEN = 10;
+const Slice TEN = {
+	.data = &VALUE_TEN,
+	.size = 1
+};
 
 static unsigned long long cnt_alloc = 0;
 static unsigned long long cnt_realloc = 0;
@@ -25,6 +30,20 @@ void bigint_finish(void) {
 	free(ctx.buf);
 }
 
+static void* ctx_buf_realloc_if_small(size_t cap) {
+	if(ctx.bufsize < cap) {
+		free(ctx.buf);
+		ctx.buf = malloc(cap);
+		if (!ctx.buf) {
+			ELOG_CODE(errno);
+			ELOG("Parameters: cap = %zu\n", cap);
+			return NULL;
+		}
+		ctx.bufsize = cap;
+	}
+	return ctx.buf;
+}
+
 BigInt bigint_alloc(size_t cap) {
 	if (cap > MAX_CAP) {
 		ELOG_STR("cap exceeds MAX_CAP");
@@ -41,7 +60,6 @@ BigInt bigint_alloc(size_t cap) {
 	cnt_alloc++;
 	z->cap = cap;
 	z->size = 0;
-	z->point = 0;
 	z->sign = 0;
 	return z;
 }
@@ -106,7 +124,6 @@ BigInt bigint_rezalloc(BigInt* z_ptr, size_t cap) {
 	if (z && z->cap >= cap) {
 		memset(z->data, 0, cap * sizeof(DataBlock));
 		z->size = 0;
-		z->point = 0;
 		z->sign = 0;
 	}
 	else {
@@ -165,10 +182,6 @@ bool bigint_sign(ConstBigInt z) {
 	return z->sign;
 }
 
-size_t bigint_point(ConstBigInt z) {
-	return z->point;
-}
-
 BigInt bigint_abs(ConstBigInt z, BigInt* out_ptr) {
 	BigInt out = *out_ptr;
 	if (out != z) out = bigint_copy(out_ptr, z);
@@ -181,11 +194,6 @@ BigInt bigint_neg(ConstBigInt z, BigInt* out_ptr) {
 	if (out != z) out = bigint_copy(out_ptr, z);
 	out->sign = !z->sign;
 	return out;
-}
-
-static inline USmallInt ABS(SmallInt v) {
-	if (v < 0) return ~(USmallInt)v + 1;
-	return (USmallInt)v;
 }
 
 BigInt bigint_create_zero() {
@@ -204,7 +212,6 @@ BigInt bigint_set_small(BigInt* z_ptr, SmallInt v) {
 	BigInt z = bigint_resize(z_ptr, 1);
 	if (!z) return NULL;
 	z->data[0] = ABS(v);
-	z->point = 0;
 	z->sign = (v < 0);
 	return z;
 }
@@ -214,7 +221,6 @@ BigInt bigint_set_usmall(BigInt* z_ptr, USmallInt v) {
 	BigInt z = bigint_resize(z_ptr, 1);
 	if (!z) return NULL;
 	z->data[0] = v;
-	z->point = 0;
 	z->sign = 0;
 	return z;
 }
@@ -224,7 +230,6 @@ BigInt bigint_create_small(SmallInt v) {
 	BigInt z = bigint_alloc(1);
 	z->data[0] = ABS(v);
 	z->size = 1;
-	z->point = 0;
 	z->sign = (v < 0);
     return z;
 }
@@ -234,7 +239,6 @@ BigInt bigint_create_usmall(USmallInt v) {
 	BigInt z = bigint_alloc(1);
 	z->data[0] = v;
 	z->size = 1;
-	z->point = 0;
 	z->sign = 0;
     return z;
 }
@@ -252,7 +256,6 @@ BigInt bigint_copy(BigInt* dst_ptr, ConstBigInt src) {
 	}
 	if (dst == NULL) return NULL;
 	memcpy(dst->data, src->data, src->size * sizeof(DataBlock));
-	dst->point = src->point;
 	dst->sign = src->sign;
 	dst->size = src->size;
 	return *dst_ptr = dst;
@@ -437,47 +440,44 @@ BigInt bigint_umul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 	const size_t cap = a->size + b->size;
 
 	BigInt out = *out_ptr;
+	const size_t mul_buf_size = karatsuba_buffer_size(n);
 
-	BigInt to_be_freed = NULL;
+	Slice A = { .data = a->data, .size = a->size };
+	Slice B = { .data = b->data, .size = b->size };
+
+	if (!ctx_buf_realloc_if_small(
+			mul_buf_size
+			+ (out == a) * A.size * sizeof(DataBlock)
+			+ (out == b) * B.size * sizeof(DataBlock))) {
+		goto error;
+	}
+	DataBlock* mul_buf = ctx.buf;
+
 	if (out == a) {
-		BigInt tmp = NULL;
-		bigint_copy(&tmp, a);
-		if (!tmp) return NULL;
-		a = tmp;
-		to_be_freed = (BigInt)a;
+		A.data = memcpy(ctx.buf, A.data, A.size * sizeof(DataBlock));
+		mul_buf += A.size;
 	}
 	else if (out == b) {
-		BigInt tmp = NULL;
-		bigint_copy(&tmp, b);
-		if (!tmp) return NULL;
-		b = tmp;
-		to_be_freed = (BigInt)b;
+		B.data = memcpy(ctx.buf, B.data, B.size * sizeof(DataBlock));
+		mul_buf += B.size;
 	}
 
 	out = bigint_realloc_if_small(&out, cap, false);
 	if (!out) goto error;
 
-	Slice A = { .data = a->data, .size = a->size };
-	Slice B = { .data = b->data, .size = b->size };
-	size_t bufsize = karatsuba_buffer_size(n);
-	if (bufsize > ctx.bufsize) {
-		ctx.buf = realloc(ctx.buf, bufsize);
-	}
-	out->size = mul(A, B, out->data, ctx.buf);
+	out->size = mul(A, B, out->data, mul_buf);
 	assert(out->size <= cap);
 	assert(out->size == size_without_zeros(out->data, out->size));
 	assert(({
-		BigInt check = bigint_alloc(cap);
-		check->size = mul_basic(A, B, check->data);
-		int cmp_res = bigint_cmp(out, check);
-		bigint_free(check);
+		DataBlock* check = malloc(cap * sizeof(DataBlock));
+		size_t check_size = mul_basic(A, B, check);
+		int cmp_res = cmp((Slice){out->data, out->size}, (Slice){check, check_size});
+		free(check);
 		cmp_res == 0;
 	}));
 
-	bigint_free(to_be_freed);
 	return *out_ptr = out;
 error:
-	bigint_free(to_be_freed);
 	return NULL;
 }
 
@@ -506,144 +506,96 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 	}
 
 	BigInt out = *out_ptr;
-	BigInt rem = NULL;
-	BigInt c = NULL;
+	BigInt rem = rem_ptr ? *rem_ptr : NULL;
 
-	bool a_copy = false;
-	bool b_copy = false;
-
-	if (out == a) {
-		BigInt tmp = NULL;
-		bigint_copy(&tmp, a);
-		if (!tmp) goto error;
-		a = tmp;
-		a_copy = true;
-	}
-
-	else if (out == b) {
-		BigInt tmp = NULL;
-		bigint_copy(&tmp, b);
-		if (!tmp) goto error;
-		b = tmp;
-		b_copy = true;
-	}
-
-	if (rem_ptr) {
-		rem = *rem_ptr;
-		if (rem == a) {
-			assert(!a_copy);
-			BigInt tmp = NULL;
-			bigint_copy(&tmp, a);
-			if (!tmp) goto error;
-			a = tmp;
-			a_copy = true;
-		}
-
-		else if (rem == b) {
-			assert(!b_copy);
-			BigInt tmp = NULL;
-			bigint_copy(&tmp, b);
-			if (!tmp) goto error;
-			b = tmp;
-			b_copy = true;
-		}
-		assert(rem == NULL || rem != out);
-	}
+	Slice A = { .data = a->data, .size = a->size };
+	Slice B = { .data = b->data, .size = b->size };
 
 	if (bigint_ucmp_small(b, 1) == 0) {
-		bigint_copy(&out, a);
+		out = bigint_copy(&out, a);
 		if (!out) goto error;
-		if (rem_ptr) bigint_set_zero(&rem);
+		if (rem_ptr) {
+			rem = bigint_set_zero(&rem);
+			if (!rem) goto error;
+		}
 		goto ret;
 	}
 
-	int cmp = bigint_ucmp(a, b);
+	int cmp_res = cmp(A, B);
 
-	if (cmp < 0) {
+	if (cmp_res < 0) {
 		if (rem_ptr) {
-			bigint_copy(&rem, a);
+			rem = bigint_copy(&rem, a);
 			if (!rem) goto error;
 		}
-		bigint_set_zero(&out);
+		out = bigint_set_zero(&out);
 		if (!out) goto error;
+		goto ret;
 	}
 
-	else if (cmp == 0) {
+	else if (cmp_res == 0) {
 		if (rem_ptr) {
-			bigint_set_zero(&rem);
+			rem = bigint_set_zero(&rem);
 			if (!rem) goto error;
 		}
-		bigint_set_usmall(&out, 1);
+		out = bigint_set_usmall(&out, 1);
 		if (!out) goto error;
+		goto ret;
 	}
 	
-	else {
-		size_t size_diff = a->size - b->size;
-		size_t bitpos;
-		bigint_copy(&rem, a);
-		if (!rem) goto error;
-		if (!bigint_lshift_blocks(b, size_diff, &c)) goto error;
-
-		if (bigint_ucmp(rem, c) < 0) {
-			if (!bigint_rezalloc(&out, size_diff)) goto error;
-			out->size = size_diff;
-			bigint_rshift_blocks(c, 1, &c);
-			bitpos = (size_diff - 1) * BLOCK_WIDTH;
-		} else {
-			if (!bigint_rezalloc(&out, size_diff + 1)) goto error;
-			out->size = size_diff + 1;
-			bitpos = size_diff * BLOCK_WIDTH;
-		}
-
-		do {
-			if (!bigint_lshift(c, 1, &c)) goto error;
-			bitpos++;
-		} while (bigint_ucmp(rem, c) >= 0);
-
-		bigint_rshift(c, 1, &c);
-		bigint_usub(rem, c, &rem);
-		bigint_bit_set(out, --bitpos);
-
-		while(bigint_ucmp(rem, b) >= 0) {
-			while (bigint_ucmp(rem, c) < 0) {
-				bigint_rshift(c, 1, &c);
-				assert(bitpos > 0);
-				bitpos--;
-			}
-			bigint_usub(rem, c, &rem);
-			bigint_bit_set(out, bitpos);
-		}
+	size_t bufsize_blocks = a->size;
+	if (out == a) {
+		bufsize_blocks += a->size;
+	} else if (out == b) {
+		bufsize_blocks += b->size;
 	}
+	if (rem == b) {
+		bufsize_blocks += b->size;
+	}
+	else if (!rem_ptr) {
+		bufsize_blocks += a->size;
+	}
+
+	if (!ctx_buf_realloc_if_small(bufsize_blocks * sizeof(DataBlock))) {
+		goto error;
+	}
+
+	DataBlock* buf = ctx.buf;
+	DataBlock* rem_data;
+	CapField rem_size;
+
+	if (out == a) {
+		A.data = memcpy(buf, A.data, A.size * sizeof(DataBlock));
+		buf += a->size;
+	} else if (out == b) {
+		B.data = memcpy(buf, B.data, B.size * sizeof(DataBlock));
+		buf += b->size;
+	}
+
+	out = bigint_realloc_if_small(&out, A.size - B.size + 1, false);
+	if (!out) goto error;
+
+	if (rem_ptr) {
+		rem = bigint_realloc_if_small(&rem, A.size, false);
+		if (!rem) goto error;
+		rem_data = rem->data;
+		if (rem == b) {
+			B.data = memcpy(buf, B.data, B.size * sizeof(DataBlock));
+			buf += b->size;
+		}
+	} else {
+		rem_data = buf;
+		buf += a->size;
+	}
+
+	out->size = div_basic(A, B, out->data, rem_data, &rem_size, buf);
+	if (rem) rem->size = rem_size;
 
 ret:
-	/*
-	BigInt check = NULL;
-	bigint_umul(out, b, &check);
-	assert(check);
-	bigint_uadd(check, rem, &check);
-	assert(check);
-	assert(bigint_ucmp(check, a) == 0 || bigint_printf("\n%px\n\n", check));
-	free(check);
-	*/
-	bigint_free(c);
-	if (a_copy) bigint_free((BigInt)a);
-	if (b_copy) bigint_free((BigInt)b);
-	if (rem_ptr) {
-		*rem_ptr = rem;
-	} else {
-		bigint_free(rem);
-	}
+	if (rem_ptr) *rem_ptr = rem;
 	return *out_ptr = out;
 
 error:
-	bigint_free(c);
-	if (a_copy) bigint_free((BigInt)a);
-	if (b_copy) bigint_free((BigInt)b);
-	if (rem_ptr) {
-		*rem_ptr = rem;
-	} else {
-		bigint_free(rem);
-	}
 	return NULL;
 }
 
@@ -794,10 +746,6 @@ int bigint_fwrite(FILE* file, ConstBigInt z, bool is_signed) {
 	if (fwrite(&size, sizeof(size), 1, file) != 1) {
 		return errno;
 	}
-	uint64_t point = z->point;
-	if (fwrite(&point, sizeof(point), 1, file) != 1) {
-		return errno;
-	}
 	bool sign = z->sign;
 	if (is_signed && fwrite(&sign, sizeof(sign), 1, file) != 1) {
 		return errno;
@@ -814,10 +762,6 @@ int bigint_fread(FILE* file, BigInt* z_ptr, bool is_signed) {
 	if (fread(&size, sizeof(size), 1, file) != 1) return errno;
 	BigInt z = bigint_resize(z_ptr, size);
 	if (!z) return errno;
-
-	uint64_t point;
-	if (fread(&point, sizeof(point), 1, file) != 1) return errno;
-	z->point = point;
 
 	bool sign;
 	if (is_signed && fread(&sign, sizeof(sign), 1, file) != 1) return errno;
@@ -1026,31 +970,43 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 	char* const digits = str + offset;
 	size_t cnt = 0;
 
-	BigInt a = NULL;
-	if (!bigint_copy(&a, z)) return NULL;
+	Slice Z = { z->data, z->size };
 
-	BigInt ten = bigint_create_usmall(10);
-	if (!ten) return NULL;
-	BigInt rem = NULL;
-	BigInt tmp = NULL;
+	const size_t bufsize = (3 * Z.size) * sizeof(DataBlock);
+	ctx_buf_realloc_if_small(bufsize);
+	DataBlock* buf = ctx.buf;
 
-	while (a->size > 0) {
-		bigint_copy(&tmp, a);
-		bigint_udiv(tmp, ten, &a, &rem);
-		assert(cnt < max_digits + max_spaces);
-		digits[cnt++] = bigint_usmall(rem) + '0';
+	DataBlock* const tmp_data = buf;
+	Slice tmp = {
+		.data = tmp_data,
+		.size = copy(Z, tmp_data)
+	};
+	buf += Z.size;
+	DataBlock* q = buf;
+	buf += Z.size;
+	USmallInt rem;
+	CapField rem_size;
+
+	while (tmp.size > 0) {
+		tmp.size = div_basic(tmp, TEN, q, tmp_data, &rem_size, buf);
+		assert((rem_size == 1 && tmp_data[0] < 10) || rem_size == 0);
+		rem = rem_size ? tmp_data[0] : 0;
+		assert(cnt < max_digits + max_spaces || ({
+					printf("%*s\n", (int)cnt, digits);
+					0;
+				}));
+		digits[cnt++] = rem + '0';
 		if (bifs.add_spaces &&
 				(cnt + 1) % (DEC_DIGITS_PER_SPACE + 1) == 0) {
-			assert(cnt < max_digits + max_spaces);
+			assert(cnt < max_digits + max_spaces || ({
+						printf("%*s\n", (int)cnt, digits);
+						0;
+					}));
 			digits[cnt++] = ' ';
 		}
+		memcpy(tmp_data, q, tmp.size * sizeof(DataBlock));
 	}
 	if (digits[cnt - 1] == ' ') cnt--;
-
-	bigint_free(a);
-	bigint_free(ten);
-	bigint_free(rem);
-	bigint_free(tmp);
 
 	for (size_t i = 0; i < cnt / 2; i++) {
 		char tmp = digits[i];
@@ -1099,6 +1055,7 @@ BigInt bigint_scan(const char* str, BigInt* out_ptr) {
 }
 
 BigInt bigint_scan_hex(const char* str, size_t str_len, BigInt* out_ptr) {
+	if (str_len == 0) return bigint_set_zero(out_ptr);
 	size_t cap = str_len / HEX_DIGITS_PER_BLOCK + 1;
 	BigInt out = bigint_rezalloc(out_ptr, cap);
 	if (!out) return NULL;
@@ -1139,47 +1096,45 @@ BigInt bigint_scan_hex(const char* str, size_t str_len, BigInt* out_ptr) {
 }
 
 BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr) {
+	assert(str);
+	assert(out_ptr);
+	if (str_len == 0) return bigint_set_zero(out_ptr);
 	size_t cap = str_len / (MAX_DEC_DIGITS_PER_BLOCK - 1) + 1;
+	assert(cap > 0);
 	BigInt out = bigint_rezalloc(out_ptr, cap);
 	if (!out) return NULL;
 
-	BigInt ten = bigint_create_usmall(10);
-	if (!ten) return NULL;
+	const size_t pow10_cap = cap + 1;
+	const size_t digit_cap = cap + 1;
+	const size_t tmp_cap = cap;
+	const size_t buf_size = (pow10_cap + digit_cap + tmp_cap) * sizeof(DataBlock);
+	DataBlock* const buf = ctx_buf_realloc_if_small(buf_size);
+	if (!buf) return NULL;
 
-	BigInt pow10 = bigint_alloc(cap);
-	if (!pow10) return NULL;
-	bigint_set_usmall(&pow10, 1);
+	DataBlock* const pow10_data = buf;
+	DataBlock* const digit_data = pow10_data + pow10_cap;
+	DataBlock* const tmp_data = digit_data + digit_cap;
+	Slice pow10 = { .data = pow10_data, .size = 1 };
+	pow10_data[0] = 1;
+	Slice digit = { .data = digit_data };
+	Slice tmp = { .data = tmp_data };
 
-	BigInt digit = bigint_alloc(cap);
-	if (!digit) return NULL;
-
-	BigInt tmp = NULL;
-
-	size_t i = str_len;
-	while (i > 0) {
-		i--;
-		char c = str[i];
-		int value;
-		if (c >= '0' && c <= '9') {
-			value = c - '0';
-		}
-		else {
+	size_t i = str_len - 1;
+	while (1) {
+		const char ch = str[i];
+		if (ch < '0' || ch > '9') {
+			i--;
 			continue;
 		}
+		tmp.size = set_usmall(tmp_data, ch - '0');
 
-		bigint_set_usmall(&digit, value);
-		bigint_copy(&tmp, digit);
-		bigint_umul(tmp, pow10, &digit);
-		bigint_copy(&tmp, out);
-		bigint_uadd(tmp, digit, &out);
-
-		bigint_copy(&tmp, pow10);
-		bigint_umul(tmp, ten, &pow10);
+		digit.size = mul_basic(tmp, pow10, digit_data);
+		out->size = add((Slice){out->data, out->size}, digit, out->data, true);
+		if (i == 0) break;
+		i--;
+		tmp.size = copy(pow10, tmp_data);
+		pow10.size = mul_basic(tmp, TEN, pow10_data);
 	}
-	bigint_free(pow10);
-	bigint_free(ten);
-	bigint_free(digit);
-	bigint_free(tmp);
 
 	return out;
 }
