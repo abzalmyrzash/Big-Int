@@ -1,5 +1,6 @@
 #include "fib.h"
 #include <assert.h>
+#include <math.h>
 #include "elog.h"
 
 uint64_t fib(unsigned int n)
@@ -17,6 +18,9 @@ uint64_t fib(unsigned int n)
 	return b;
 }
 
+constexpr double GOLDEN_RATIO = 1.61803398875;
+constexpr double LOG2_GOLDEN_RATIO = 0.69424191363; 
+
 BigInt bigFib(unsigned int n, BigInt* out_ptr)
 {
 	if (n == 0) {
@@ -25,9 +29,16 @@ BigInt bigFib(unsigned int n, BigInt* out_ptr)
 	if (n == 1 || n == 2) {
 		return bigint_set_usmall(out_ptr, 1);
 	}
-	BigInt a = bigint_create_usmall(1);
-	BigInt out = bigint_set_usmall(out_ptr, 1);
-	BigInt tmp = NULL;
+	BigInt a, out, tmp;
+
+	const size_t cap = ceil(n * LOG2_GOLDEN_RATIO / BIGINT_BLOCK_WIDTH);
+
+	a = bigint_alloc(cap);
+	a = bigint_set_usmall(&a, 1);
+	out = bigint_realloc_if_small(out_ptr, cap, false);
+	out = bigint_set_usmall(out_ptr, 1);
+	tmp = bigint_alloc(cap);
+
 	for (int i = 3; i <= n; i++) {
 		bigint_copy(&tmp, out);
 		out = bigint_uadd(out, a, out_ptr);
@@ -37,6 +48,7 @@ BigInt bigFib(unsigned int n, BigInt* out_ptr)
 		}
 		bigint_copy(&a, tmp);
 	}
+
 	bigint_free(a);
 	bigint_free(tmp);
 	return out;

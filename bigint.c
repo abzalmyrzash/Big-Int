@@ -7,11 +7,6 @@
 int bigint_errno = 0;
 
 static thread_local Context ctx;
-constexpr DataBlock VALUE_TEN = 10;
-const Slice TEN = {
-	.data = &VALUE_TEN,
-	.size = 1
-};
 
 static unsigned long long cnt_alloc = 0;
 static unsigned long long cnt_realloc = 0;
@@ -30,6 +25,8 @@ void bigint_finish(void) {
 	free(ctx.buf);
 }
 
+static size_t cnt_ctx_buf_realloc = 0;
+
 static void* ctx_buf_realloc_if_small(size_t cap) {
 	if(ctx.bufsize < cap) {
 		free(ctx.buf);
@@ -39,6 +36,7 @@ static void* ctx_buf_realloc_if_small(size_t cap) {
 			ELOG("Parameters: cap = %zu\n", cap);
 			return NULL;
 		}
+		cnt_ctx_buf_realloc++;
 		ctx.bufsize = cap;
 	}
 	return ctx.buf;
@@ -160,6 +158,7 @@ void bigint_memstat(void) {
 	printf("Alloc: %llu\n", cnt_alloc);
 	printf("Realloc: %llu\n", cnt_realloc);
 	printf("Free: %llu\n", cnt_free);
+	printf("Buffer reallocations: %llu\n", cnt_ctx_buf_realloc);
 }
 
 size_t bigint_size(ConstBigInt z) {
@@ -543,7 +542,7 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 		goto ret;
 	}
 	
-	size_t bufsize_blocks = a->size;
+	size_t bufsize_blocks = b->size + 1;
 	if (out == a) {
 		bufsize_blocks += a->size;
 	} else if (out == b) {
@@ -556,11 +555,11 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 		bufsize_blocks += a->size;
 	}
 
-	if (!ctx_buf_realloc_if_small(bufsize_blocks * sizeof(DataBlock))) {
+	DataBlock* buf = ctx_buf_realloc_if_small(bufsize_blocks * sizeof(DataBlock));
+	if (!buf) {
 		goto error;
 	}
 
-	DataBlock* buf = ctx.buf;
 	DataBlock* rem_data;
 	CapField rem_size;
 
@@ -972,23 +971,27 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 
 	Slice Z = { z->data, z->size };
 
-	const size_t bufsize = (3 * Z.size) * sizeof(DataBlock);
-	ctx_buf_realloc_if_small(bufsize);
-	DataBlock* buf = ctx.buf;
+	const size_t q_cap = z->size;
+	const size_t tmp_cap = z->size;
+	static const size_t div_buf_cap = 2;
 
-	DataBlock* const tmp_data = buf;
+	const size_t bufsize = (q_cap + tmp_cap + div_buf_cap) * sizeof(DataBlock);
+	DataBlock* const buf = ctx_buf_realloc_if_small(bufsize);
+	if (!buf) return NULL;
+
+	DataBlock* const q_data = buf;
+	DataBlock* const tmp_data = q_data + q_cap;
+	DataBlock* const div_buf = tmp_data + tmp_cap;
 	Slice tmp = {
 		.data = tmp_data,
 		.size = copy(Z, tmp_data)
 	};
-	buf += Z.size;
-	DataBlock* q = buf;
-	buf += Z.size;
+
 	USmallInt rem;
 	CapField rem_size;
 
 	while (tmp.size > 0) {
-		tmp.size = div_basic(tmp, TEN, q, tmp_data, &rem_size, buf);
+		tmp.size = div_basic(tmp, TEN, q_data, tmp_data, &rem_size, div_buf);
 		assert((rem_size == 1 && tmp_data[0] < 10) || rem_size == 0);
 		rem = rem_size ? tmp_data[0] : 0;
 		assert(cnt < max_digits + max_spaces || ({
@@ -1004,7 +1007,7 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 					}));
 			digits[cnt++] = ' ';
 		}
-		memcpy(tmp_data, q, tmp.size * sizeof(DataBlock));
+		memcpy(tmp_data, q_data, tmp.size * sizeof(DataBlock));
 	}
 	if (digits[cnt - 1] == ' ') cnt--;
 

@@ -11,6 +11,8 @@ int run(BigInt (*f)(unsigned int, BigInt*));
 
 int main()
 {
+	run(bigFib);
+	return 0;
 	/*
 	bigint_init();
 	BigInt A = NULL;
@@ -40,7 +42,7 @@ int main()
 	BigInt res = NULL;
 	BigInt rem = NULL;
 
-	constexpr int buffer_size = 1024;
+	constexpr int buffer_size = 102400;
 	char buffer[buffer_size];
 
 	printf("Enter a: ");
@@ -100,12 +102,11 @@ int main()
 	bigint_memstat();
 	bigint_finish();
 	return 0;
-	run(bigFactorial);
 }
 
 int run(BigInt (*f)(unsigned int, BigInt*)) {
 	bigint_init();
-	BigInt res = bigint_alloc(10000);
+	BigInt res = NULL;
 	while(1) {
 		int n;
 		scanf("%d", &n);

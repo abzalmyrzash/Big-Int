@@ -14,6 +14,12 @@ typedef struct {
 	size_t bufsize;
 } Context;
 
+static constexpr DataBlock VALUE_TEN = 10;
+static const Slice TEN = {
+	.data = (DataBlock*)&VALUE_TEN,
+	.size = 1
+};
+
 constexpr DataBlock BLOCK_MAX_VALUE = (DataBlock)~0;
 
 constexpr uint8_t DATA_OFFSET = offsetof(struct bigint, data); // offset of data in bytes
@@ -119,9 +125,9 @@ static int cmp(Slice a, Slice b) {
 	}
 }
 
-// compare (a << lshift) with b
-// NOTE: lshift by number of blocks not bits
-static int cmp_lshifted(Slice a, size_t lshift, Slice b) {
+// compare (a <<< lshift) with b
+// _sls stands for superleftshifted
+static int cmp_sls(Slice a, size_t lshift, Slice b) {
 	if (a.size == 0) {
 		if (b.size > 0) return -1;
 		return 0;
@@ -161,6 +167,12 @@ static inline size_t size_without_zeros(const DataBlock* a, size_t size) {
 		size--;
 	}
 	return size;
+}
+
+// size in bits
+static inline size_t width(Slice a) {
+	if (a.size == 0) return 0;
+	return a.size * BLOCK_WIDTH - CLZ(a.data[a.size - 1]);
 }
 
 static Slice split(Slice* slice, size_t size) {
@@ -219,9 +231,8 @@ static size_t add(Slice a, Slice b, DataBlock* out, bool assign_carry) {
 	}
 }
 
-// out = (a << lshift) + b;
-// NOTE: lshift by number of blocks not bits
-static size_t add_lshifted(Slice a, size_t lshift, Slice b, DataBlock* out, bool assign_carry) {
+// out = (a <<< lshift) + b;
+static size_t add_sls(Slice a, size_t lshift, Slice b, DataBlock* out, bool assign_carry) {
 	if (a.size == 0) {
 		memmove(out, b.data, b.size * sizeof(DataBlock));
 		return b.size;
@@ -304,11 +315,11 @@ static size_t sub(Slice a, Slice b, DataBlock* out, bool* out_sign) {
 	}
 }
 
-// out = (a << lshift) - b;
-// Requirements: (a << lshift) >= b;
-// NOTE: lshift by number of blocks not bits
-static size_t usub_lshifted(Slice a, size_t lshift, Slice b, DataBlock* out) {
-	assert(cmp_lshifted(a, lshift, b) >= 0);
+// out = (a <<< lshift) - b;
+// Requirements: (a <<< lshift) >= b;
+// _sls stands for superleftshifted
+static size_t usub_sls(Slice a, size_t lshift, Slice b, DataBlock* out) {
+	assert(cmp_sls(a, lshift, b) >= 0);
 	unsigned char borrow = 0;
 	size_t i = 0;
 	if (b.size <= lshift) {
@@ -334,9 +345,9 @@ static size_t usub_lshifted(Slice a, size_t lshift, Slice b, DataBlock* out) {
 
 // out = a - (b << lshift);
 // a must be >= (b << lshift);
-// NOTE: lshift by number of blocks not bits
-static size_t usub_b_lshifted(Slice a, Slice b, size_t lshift, DataBlock* out) {
-	assert(cmp_lshifted(b, lshift, a) <= 0);
+// _b_sls stands for b is superleftshifted
+static size_t usub_b_sls(Slice a, Slice b, size_t lshift, DataBlock* out) {
+	assert(cmp_sls(b, lshift, a) <= 0);
 	memmove(out, a.data, lshift * sizeof(DataBlock));
 	unsigned char borrow = 0;
 	size_t i = lshift;
@@ -349,8 +360,10 @@ static size_t usub_b_lshifted(Slice a, Slice b, size_t lshift, DataBlock* out) {
 	return size_without_zeros(out, i);
 }
 
-static size_t sub_lshifted(Slice a, size_t lshift, Slice b, DataBlock* out, bool* out_sign) {
-	int cmp_res = cmp_lshifted(a, lshift, b);
+// (a <<< lshift) - b
+// _sls stands for superleftshifted
+static size_t sub_sls(Slice a, size_t lshift, Slice b, DataBlock* out, bool* out_sign) {
+	int cmp_res = cmp_sls(a, lshift, b);
 	if (cmp_res == 0) {
 		if (out_sign) *out_sign = 0;
 		return 0;
@@ -368,12 +381,12 @@ static size_t sub_lshifted(Slice a, size_t lshift, Slice b, DataBlock* out, bool
 	}
 	if (cmp_res > 0) {
 		if (out_sign) *out_sign = 0;
-		size_t size = usub_lshifted(a, lshift, b, out);
+		size_t size = usub_sls(a, lshift, b, out);
 		assert(size == size_without_zeros(out, size));
 		return size;
 	} else {
 		if (out_sign) *out_sign = 1;
-		size_t size = usub_b_lshifted(b, a, lshift, out);
+		size_t size = usub_b_sls(b, a, lshift, out);
 		assert(size == size_without_zeros(out, size));
 		return size;
 	}
@@ -390,15 +403,15 @@ static size_t add_signed(Slice a, bool a_sign, Slice b, bool b_sign,
 	return size;
 }
 
-// (a << lshift) + b, signed
-// NOTE: lshift by number of blocks not bits
-static size_t add_lshifted_signed(Slice a, size_t lshift, bool a_sign,
+// (a <<< lshift) + b, signed
+// _sls stands for superleftshifted
+static size_t add_sls_signed(Slice a, size_t lshift, bool a_sign,
 		Slice b, bool b_sign, DataBlock* out, bool* out_sign, bool assign_carry) {
 	if (a_sign == b_sign) {
 		*out_sign = a_sign;
-		return add_lshifted(a, lshift, b, out, assign_carry);
+		return add_sls(a, lshift, b, out, assign_carry);
 	}
-	size_t size = sub_lshifted(a, lshift, b, out, out_sign);
+	size_t size = sub_sls(a, lshift, b, out, out_sign);
 	*out_sign ^= a_sign;
 	return size;
 }
@@ -479,6 +492,7 @@ static size_t mul(Slice a, Slice b, DataBlock* out, DataBlock* buffer) {
 // (a-b)(d-c)+ac+bd is used for the middle part
 // because (a+b) and (c+d) can overflow
 static size_t karatsuba(Slice b, Slice d, size_t n, DataBlock* out, DataBlock* buffer) {
+
 	if(b.size == 0 || d.size == 0) return 0;
 	assert(n == (b.size > d.size ? b.size : d.size));
 
@@ -546,7 +560,7 @@ static size_t karatsuba(Slice b, Slice d, size_t n, DataBlock* out, DataBlock* b
 	abcd.size = add_signed(abcd, abcd_sign, a_times_c, 0, abcd_data, &abcd_sign, true);
 	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
 	// abcd = (a_times_c << m) + abcd
-	abcd.size = add_lshifted_signed(a_times_c, m, 0, abcd, abcd_sign, abcd_data, &abcd_sign, true);
+	abcd.size = add_sls_signed(a_times_c, m, 0, abcd, abcd_sign, abcd_data, &abcd_sign, true);
 	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
 
 	const Slice b_times_d = {
@@ -563,38 +577,7 @@ static size_t karatsuba(Slice b, Slice d, size_t n, DataBlock* out, DataBlock* b
 	memmove(out + m, out, abcd.size * sizeof(DataBlock));
 	abcd.data += m;
 	// (abcd << m) + bd
-	return add_lshifted_signed(abcd, m, abcd_sign, b_times_d, 0, out, &abcd_sign, true);
-}
-
-// out = a^pow % mod
-static size_t pow_mod(Slice a, Slice pow, Slice mod, DataBlock* out, DataBlock* buffer) {
-	const size_t out_cap = mod.size;
-	Slice b = { .data = out, .size = 1 };
-	out[0] = 1;
-	const int bits = BLOCK_WIDTH - __builtin_clzg(pow.data[pow.size - 1]);
-	for (int i = bits - 1; i >= 0; i--) {
-		
-	}
-	for (size_t i = pow.size - 1; i > 0; i--) {
-		DataBlock pow_block = pow.data[i - 1];
-		for (int j = BLOCK_WIDTH - 1; j >= 0; j--) {
-			// b = b * b
-			b.size = mul(b, b, buffer, buffer + out_cap);
-			memcpy(out, buffer, b.size * sizeof(DataBlock));
-			// todo: take modulo
-			if (pow_block & ((DataBlock)1 << j)) {
-				// b = a * b
-				b.size = mul(a, b, buffer, buffer + out_cap);
-				memcpy(out, buffer, b.size * sizeof(DataBlock));
-				// todo: take modulo
-			}
-		}
-	}
-	return b.size;
-}
-
-static size_t newton_reciprocal() {
-	
+	return add_sls_signed(abcd, m, abcd_sign, b_times_d, 0, out, &abcd_sign, true);
 }
 
 static size_t copy(Slice z, DataBlock* out) {
@@ -604,7 +587,9 @@ static size_t copy(Slice z, DataBlock* out) {
 	return z.size;
 }
 
-static size_t lshift_blocks(Slice z, size_t shift, DataBlock* out) {
+// super-left-shifts z, i.e. left-shifts by number of blocks rather than bits
+// this operation is denoted as <<< (as opposed to << for left-shift by bits)
+static size_t super_lshift(Slice z, size_t shift, DataBlock* out) {
 	if (z.size == 0) return 0;
 	if (shift == 0) return copy(z, out);
 	memset(out, 0, shift * sizeof(DataBlock));
@@ -612,7 +597,9 @@ static size_t lshift_blocks(Slice z, size_t shift, DataBlock* out) {
 	return z.size + shift;
 }
 
-static size_t rshift_blocks(Slice z, size_t shift, DataBlock* out) {
+// super-right-shifts z, i.e. right-shifts by number of blocks rather than bits
+// this operation is denoted as >>> (as opposed to >> for right-shift by bits)
+static size_t super_rshift(Slice z, size_t shift, DataBlock* out) {
 	if (z.size <= shift) return 0;
 	memmove(out, z.data + shift, (z.size - shift) * sizeof(DataBlock));
 	return z.size - shift;
@@ -623,7 +610,7 @@ static size_t lshift(Slice z, size_t shift, DataBlock* out) {
 
 	const size_t shift_blocks = shift / BLOCK_WIDTH;
 	const size_t shift_bits = shift % BLOCK_WIDTH;
-	if (shift_bits == 0) return lshift_blocks(z, shift_blocks, out);
+	if (shift_bits == 0) return super_lshift(z, shift_blocks, out);
 
 	const DataBlock LOW_BITS = (1ULL << (BLOCK_WIDTH - shift_bits)) - 1;
 	const DataBlock HIGH_BITS = ~0ULL - LOW_BITS;
@@ -657,7 +644,7 @@ static size_t lshift(Slice z, size_t shift, DataBlock* out) {
 static size_t rshift(Slice z, size_t shift, DataBlock* out) {
 	size_t shift_blocks = shift / BLOCK_WIDTH;
 	size_t shift_bits = shift % BLOCK_WIDTH;
-	if (shift_bits == 0) return rshift_blocks(z, shift_blocks, out);
+	if (shift_bits == 0) return super_rshift(z, shift_blocks, out);
 
 	if (shift_blocks >= z.size) return 0;
 
@@ -699,67 +686,226 @@ static inline void bit_toggle(DataBlock* z, size_t bitpos) {
 	z[bitpos / BLOCK_WIDTH] ^= (1ULL << (bitpos % BLOCK_WIDTH));
 }
 
-static size_t div_basic(const Slice a, const Slice b, DataBlock* out, DataBlock* rem_data, CapField* rem_size, DataBlock* buffer) {
+// divides a / b, fills in the quotient in quo, remainder in rem_data and rem_size,
+// uses buffer for temporary storage (up to (b.size + 1) * sizeof(DataBlock) bytes)
+// returns quotient's size
+// uses basic long division algorithm
+static size_t div_basic(const Slice a, const Slice b, DataBlock* quo,
+		DataBlock* rem_data, CapField* rem_size, DataBlock* buffer) {
+	assert(b.size > 0);
+
 	const size_t size_diff = a.size - b.size;
 	DataBlock* c_data = buffer;
+
+	// compare b <<< size_diff to a
+	int cmp_res = cmp_sls(b, size_diff, a);
+
+	// if b <<< size_diff == a, a / b = 1 <<< size_diff and a % b = 0
+	if (cmp_res == 0) {
+		*rem_size = 0;
+		quo[size_diff] = 1;
+		memset(quo, 0, size_diff * sizeof(DataBlock));
+		return size_diff + 1;
+	}
+
+	// if (b <<< 0) = b > a, a / b = 0 and a % b = a
+	if (cmp_res > 0 && size_diff == 0) {
+		copy(a, rem_data);
+		*rem_size = a.size;
+		return 0;
+	}
+
+	// quotient size, we return this in the end
+	size_t quo_size;
+
+	// this is a classic long division algorithm,
+	// where we will repeatedly perform subtraction:
+	// rem -= (b << bitpos)
+	// and also set the bitpos-th bit in out
+	// with the largest possible bitpos where rem >= (b << bitpos)
+	size_t bitpos;
+	// to be more efficient and save memory,
+	// we store b leftshifted by up to BLOCK_WIDTH bits in c,
+	// which leaves some integer number of whole blocks that weren't shifted
+	// so we do subtraction by using usub_b_sls(rem, c, block_shift, rem_data)
+	// which simulates subtracting c super-leftshifted by block_shift
+	// without actually shifting c
+	size_t block_shift = size_diff;
+	// first we need to find the largest left shift we need to do
+	// then subtract it from rem
+	// and do the cycle of right shifting c and subtracting from rem
+	// until rem becomes smaller than b
+
+	// rem will be equal to a at first
 	Slice rem = {
 		.data = rem_data,
 		.size = copy(a, rem_data)
 	};
+
+	// we will fill c_data by b shifted by some bits
 	Slice c = {
 		.data = c_data,
-		.size = lshift_blocks(b, size_diff, c_data)
 	};
 
-	int cmp_res = cmp(rem, c);
-	if (cmp_res == 0) {
-		*rem_size = 0;
-		out[size_diff] = 1;
-		memset(out, 0, size_diff * sizeof(DataBlock));
-		return size_diff + 1;
-	}
-	if (cmp_res < 0 && size_diff == 0) {
-		*rem_size = rem.size;
-		return 0;
+	// number of leading zeros in a and b
+	const int a_clz = CLZ(a.data[a.size - 1]);
+	const int b_clz = CLZ(b.data[b.size - 1]);
+	const int clz_diff = a_clz - b_clz;
+
+	// first we shift b (into c) so that the clz of a and c match up
+
+	// (b <<< size_diff) > a, rightshift by clz_diff
+	if (cmp_res > 0) {
+		assert(clz_diff >= 0 && clz_diff < BLOCK_WIDTH);
+		quo_size = size_diff;
+		memset(quo, 0, quo_size * sizeof(DataBlock));
+		if (clz_diff > 0) {
+			// rightshift b by clz_diff, however if we do it directly
+			// we will lose some bits of data.
+			// so instead we leftshift by BLOCK_WIDTH - clz_diff
+			// and decrease block_shift
+			// (note: clz_diff can only be >= 0 and
+			//  if it's == 0 then we just copy b of course)
+			c.size = lshift(b, BLOCK_WIDTH - clz_diff, c_data);
+			block_shift--;
+		}
+		else {
+			c.size = copy(b, c_data);
+		}
 	}
 
-	size_t bitpos;
-	size_t out_size;
-	const int c_clz = __builtin_clzg(c.data[c.size - 1]);
-	const int rem_clz = __builtin_clzg(rem.data[rem.size - 1]);
-	const int clz_diff = c_clz - rem_clz;
-
-	if (cmp_res < 0) {
-		assert(clz_diff <= 0);
-		out_size = size_diff;
-		memset(out, 0, out_size * sizeof(DataBlock));
-		c.size = rshift(c, -clz_diff, c_data);
-	} else {
-		assert(clz_diff >= 0);
-		out_size = size_diff + 1;
-		memset(out, 0, out_size * sizeof(DataBlock));
-		c.size = lshift(c, clz_diff, c_data);
+	// (b <<< size_diff) < a, leftshift by -clz_diff
+	else {
+		assert(clz_diff <= 0 && clz_diff > -(int)BLOCK_WIDTH);
+		quo_size = size_diff + 1;
+		memset(quo, 0, quo_size * sizeof(DataBlock));
+		c.size = lshift(b, -clz_diff, c_data);
 	}
-	bitpos = size_diff * BLOCK_WIDTH + clz_diff;
 
-	cmp_res = cmp(rem, c);
-	if (cmp_res < 0) {
-		c.size = rshift(c, 1, c_data);
+	assert(CLZ(c.data[c.size - 1]) == a_clz);
+
+	bitpos = size_diff * BLOCK_WIDTH - clz_diff;
+
+	// (c <<< block_shift) > rem
+	cmp_res = cmp_sls(c, block_shift, rem);
+	if (cmp_res > 0) {
+		// we can lose data if bitpos % BLOCK_WIDTH == 0
+		if (bitpos % BLOCK_WIDTH == 0) {
+			// rightshift by 1, but same trick as before
+			c.size = lshift(c, BLOCK_WIDTH - 1, c_data);
+			block_shift--;
+		}
+		else c.size = rshift(c, 1, c_data);
 		bitpos--;
 	}
-	rem.size = usub(rem, c, rem_data);
-	bit_set(out, bitpos);
+	rem.size = usub_b_sls(rem, c, block_shift, rem_data);
+	bit_set(quo, bitpos);
 
+	// subtract c from rem until rem becomes smaller than b
 	while(cmp(rem, b) >= 0) {
-		while (cmp(rem, c) < 0) {
-			c.size = rshift(c, 1, c_data);
+		// right shift until c becomes smaller than rem
+		do {
+			// we can lose data if bitpos % BLOCK_WIDTH == 0
+			if (bitpos % BLOCK_WIDTH == 0) {
+				// rightshift by 1, but same trick as before
+				c.size = lshift(c, BLOCK_WIDTH - 1, c_data);
+				block_shift--;
+			}
+			else c.size = rshift(c, 1, c_data);
 			assert(bitpos > 0);
 			bitpos--;
-		}
-		rem.size = usub(rem, c, rem_data);
-		bit_set(out, bitpos);
+		} while (cmp_sls(c, block_shift, rem) > 0);
+		rem.size = usub_b_sls(rem, c, block_shift, rem_data);
+		bit_set(quo, bitpos);
 	}
 	*rem_size = rem.size;
 
-	return out_size;
+	return quo_size;
 }
+
+// x + x * (1 - d * x)
+static size_t newton_step(Slice d, size_t d_point, Slice x, size_t x_point,
+		DataBlock* new_x_data, DataBlock* dx_data, DataBlock* _1_data, DataBlock* mul_buf) {
+	Slice dx = { .data = dx_data };
+	Slice _1 = { .data = _1_data };
+	Slice new_x = { .data = new_x_data };
+	// d * x
+	dx.size = mul(d, x, dx_data, mul_buf);
+
+	// shift 1
+	_1_data[0] = 1;
+	_1.size = 1;
+	_1.size = lshift(_1, d_point + x_point, _1_data);
+
+	// "_1" = 1 - dx
+	_1.size = usub(_1, dx, _1_data);
+
+	// x * (1 - dx)
+	new_x.size = mul(x, _1, new_x_data, mul_buf);
+
+	return add(x, new_x, new_x_data, true);
+}
+
+// out = 1 / d with precision up to p bits
+static size_t newton_reciprocal(Slice d, size_t p, DataBlock* out, DataBlock* buffer) {
+	size_t d_width = width(d);
+	assert(d_width > 0);
+	size_t point = d_width; // binary point
+
+	DataBlock* x_data = out;
+
+	const size_t new_x_cap = 9999;
+	const size_t dx_cap    = 9999;
+	const size_t _1_cap    = 9999;
+	const size_t mul_cap   = 9999;
+
+	DataBlock* new_x_data = buffer;
+	DataBlock* dx_data    = new_x_data + new_x_cap;
+	DataBlock* _1_data    = dx_data + dx_cap;
+	DataBlock* mul_buf    = _1_data + _1_cap;
+
+	size_t x_size = point / BLOCK_WIDTH;
+
+	Slice x = { .data = x_data, .size = x_size };
+
+	size_t d_point, x_point;
+
+	const int newton_iterations = p;
+	for (int i = 0; i < newton_iterations; i++) {
+		x.size = newton_step(d, d_point, x, x_point, new_x_data, dx_data, _1_data, mul_buf);
+		DataBlock* tmp = x_data;
+		x.data = x_data = new_x_data;
+		new_x_data = tmp;
+	}
+	memmove(out, x.data, x.size * sizeof(DataBlock));
+
+	return x.size;
+}
+
+// out = a^pow % mod
+static size_t pow_mod(Slice a, Slice pow, Slice mod, DataBlock* out, DataBlock* buffer) {
+	const size_t out_cap = mod.size;
+	Slice b = { .data = out, .size = 1 };
+	out[0] = 1;
+	const int bits = BLOCK_WIDTH - CLZ(pow.data[pow.size - 1]);
+	for (int i = bits - 1; i >= 0; i--) {
+		
+	}
+	for (size_t i = pow.size - 1; i > 0; i--) {
+		DataBlock pow_block = pow.data[i - 1];
+		for (int j = BLOCK_WIDTH - 1; j >= 0; j--) {
+			// b = b * b
+			b.size = mul(b, b, buffer, buffer + out_cap);
+			memcpy(out, buffer, b.size * sizeof(DataBlock));
+			// todo: take modulo
+			if (pow_block & ((DataBlock)1 << j)) {
+				// b = a * b
+				b.size = mul(a, b, buffer, buffer + out_cap);
+				memcpy(out, buffer, b.size * sizeof(DataBlock));
+				// todo: take modulo
+			}
+		}
+	}
+	return b.size;
+}
+
