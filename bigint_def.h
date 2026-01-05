@@ -13,7 +13,7 @@ struct bigint {
 	BigInt_CapField   size;
 	bool sign;
 #endif
-	BigInt_DataBlock  data[];
+	BigInt_Block  data[];
 }
 #ifdef BIGINT_PACKED
 	__attribute__((packed))
@@ -21,7 +21,7 @@ struct bigint {
 ;
 
 typedef struct {
-	const BigInt_DataBlock* data;
+	const BigInt_Block* data;
 	BigInt_CapField size;
 } BigInt_Slice;
 

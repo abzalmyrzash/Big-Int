@@ -20,22 +20,20 @@
 #if BIGINT_BLOCK_WIDTH == 64
 	typedef  int64_t SmallInt;
 	typedef uint64_t USmallInt;
-	typedef uint64_t BigInt_DataBlock;
 #elif BIGINT_BLOCK_WIDTH == 32
 	typedef  int32_t SmallInt;
 	typedef uint32_t USmallInt;
-	typedef uint32_t BigInt_DataBlock;
 #elif BIGINT_BLOCK_WIDTH == 16
 	typedef  int16_t SmallInt;
 	typedef uint16_t USmallInt;
-	typedef uint16_t BigInt_DataBlock;
 #elif BIGINT_BLOCK_WIDTH == 8
 	typedef  int8_t  SmallInt;
 	typedef uint8_t  USmallInt;
-	typedef uint8_t  BigInt_DataBlock;
 #else
 	#error "Invalid BIGINT_BLOCK_WIDTH (only 8, 16, 32, 64 are allowed)"
 #endif
+
+typedef USmallInt BigInt_Block;
 
 #if BIGINT_CAP_WIDTH == 64
 	typedef uint64_t BigInt_CapField;

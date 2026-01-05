@@ -1,5 +1,6 @@
 #include "bigint_rand.h"
-#include "bigint_impl.h"
+#include "bigint_alias.h"
+#include "bigint_impl_basic.h"
 #include <stdlib.h>
 
 static constexpr int RAND_WIDTH = 32 - __builtin_clzg((uint32_t)RAND_MAX);
@@ -8,7 +9,7 @@ BigInt bigint_rand(BigInt* z_ptr, size_t bits) {
 	const size_t blocks = bits / BLOCK_WIDTH;
 	const int final_bits = bits % BLOCK_WIDTH;
 	const size_t cap = blocks + (final_bits > 0);
-	BigInt z = bigint_realloc_if_small(z_ptr, cap, false);
+	BigInt z = bigint_reserve(z_ptr, cap, false);
 	int rand_num = 0;
 	int rem_bits = 0;
 	for (size_t i = 0; i < blocks; i++) {

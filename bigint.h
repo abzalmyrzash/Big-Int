@@ -8,6 +8,9 @@ extern int bigint_errno;
 #define BIGINT_ERR_SUB_NEG     -2
 #define BIGINT_ERR_DIV_BY_ZERO -3
 
+#define BIGINT_KEEP_DATA 1
+#define BIGINT_CLEAR_DATA 0
+
 typedef struct bigint_context* BigInt_Context;
 
 typedef struct bigint* BigInt;
@@ -28,7 +31,7 @@ void bigint_finish(void);
 BigInt bigint_alloc(size_t cap);
 BigInt bigint_zalloc(size_t cap);
 BigInt bigint_realloc(BigInt* z, size_t cap, bool keep_data);
-BigInt bigint_realloc_if_small(BigInt* z, size_t cap, bool keep_data);
+BigInt bigint_reserve(BigInt* z, size_t cap, bool keep_data);
 
 void bigint_free(BigInt z);
 void bigint_structinfo(void);
@@ -37,7 +40,7 @@ void bigint_memstat(void);
 size_t bigint_size(ConstBigInt z);
 size_t bigint_cap(ConstBigInt z);
 bool   bigint_sign(ConstBigInt z);
-const BigInt_DataBlock* bigint_data(ConstBigInt z);
+const BigInt_Block* bigint_data(ConstBigInt z);
 
 BigInt bigint_abs(ConstBigInt z, BigInt* out);
 BigInt bigint_neg(ConstBigInt z, BigInt* out);
@@ -91,6 +94,9 @@ BigInt bigint_mul(ConstBigInt a, ConstBigInt b, BigInt* out);
 // signed division
 BigInt bigint_div(ConstBigInt a, ConstBigInt b, BigInt* out, BigInt* rem);
 
+// a^pow % mod (unsigned)
+BigInt bigint_powmod(ConstBigInt a, ConstBigInt pow, ConstBigInt mod, BigInt* out_ptr);
+
 BigInt bigint_lshift(ConstBigInt z, size_t shift, BigInt* out);
 BigInt bigint_rshift(ConstBigInt z, size_t shift, BigInt* out);
 BigInt bigint_lshift_blocks(ConstBigInt z, size_t shift, BigInt* out);
@@ -104,3 +110,5 @@ BigInt bigint_scan(const char* str, BigInt* out);
 
 int bigint_fprintf(FILE* file, const char* const format, ...);
 int bigint_printf(const char* const format, ...);
+
+bool set_newton_precision(size_t p);

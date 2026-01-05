@@ -10,7 +10,7 @@ uint64_t fib(unsigned int n)
 	uint64_t a = 0;
 	uint64_t b = 1;
 	uint64_t tmp;
-	for (int i = 2; i <= n; i++) {
+	for (unsigned int i = 2; i <= n; i++) {
 		tmp = b;
 		b += a;
 		a = tmp;
@@ -18,7 +18,7 @@ uint64_t fib(unsigned int n)
 	return b;
 }
 
-constexpr double GOLDEN_RATIO = 1.61803398875;
+//constexpr double GOLDEN_RATIO = 1.61803398875;
 constexpr double LOG2_GOLDEN_RATIO = 0.69424191363; 
 
 BigInt bigFib(unsigned int n, BigInt* out_ptr)
@@ -35,11 +35,11 @@ BigInt bigFib(unsigned int n, BigInt* out_ptr)
 
 	a = bigint_alloc(cap);
 	a = bigint_set_usmall(&a, 1);
-	out = bigint_realloc_if_small(out_ptr, cap, false);
+	out = bigint_reserve(out_ptr, cap, false);
 	out = bigint_set_usmall(out_ptr, 1);
 	tmp = bigint_alloc(cap);
 
-	for (int i = 3; i <= n; i++) {
+	for (unsigned int i = 3; i <= n; i++) {
 		bigint_copy(&tmp, out);
 		out = bigint_uadd(out, a, out_ptr);
 		if (!out) {

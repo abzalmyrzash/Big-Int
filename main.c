@@ -11,9 +11,9 @@ int run(BigInt (*f)(unsigned int, BigInt*));
 
 int main()
 {
+	/*
 	run(bigFib);
 	return 0;
-	/*
 	bigint_init();
 	BigInt A = NULL;
 	BigInt B = NULL;
@@ -36,9 +36,15 @@ int main()
 	*/
 
 	bigint_init();
+	return 0;
+	size_t p;
+	scanf("%zu", &p);
+	set_newton_precision(p);
+	return 0;
 
 	BigInt A = NULL;
 	BigInt B = NULL;
+	BigInt C = NULL;
 	BigInt res = NULL;
 	BigInt rem = NULL;
 
@@ -59,6 +65,21 @@ int main()
 	// bigint_printf("%0_d\n", B, B);
 	printf("Size: %zu\n", bigint_size(B));
 
+	printf("Enter c: ");
+	fgets(buffer, buffer_size, stdin);
+	bigint_scan(buffer, &C);
+	bigint_printf("%p0_x\n", C, C);
+	// bigint_printf("%0_d\n", B, B);
+	printf("Size: %zu\n", bigint_size(C));
+
+	bigint_powmod(A, B, C, &res);
+	printf("Size: %zu\n", bigint_size(res));
+	fflush(stdout);
+	bigint_printf("%p0_x\n", res);
+	fflush(stdout);
+	bigint_printf("%d\n", res);
+
+	return 0;
 	res = bigint_alloc(bigint_size(A) + bigint_size(B));
 
 	bigint_add(A, B, &res);
