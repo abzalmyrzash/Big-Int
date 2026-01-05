@@ -681,8 +681,8 @@ static size_t copy(Slice z, Block* out) {
 static size_t super_lshift(Slice z, size_t shift, Block* out) {
 	if (z.size == 0) return 0;
 	if (shift == 0) return copy(z, out);
-	memset(out, 0, shift * sizeof(Block));
 	memmove(out + shift, z.data, z.size * sizeof(Block));
+	memset(out, 0, shift * sizeof(Block));
 	return z.size + shift;
 }
 
@@ -966,7 +966,7 @@ static size_t newton_reciprocal_size(Slice d, size_t* buf_size) {
 	const size_t mul_cap   = mul_buffer_size(final_dx_size);
 
 	*buf_size = new_x_cap + dx_cap + mul_cap;
-	return (final_x_point - 1) / BLOCK_WIDTH + 1;
+	return final_x_size + 1;
 }
 
 // out = 1 / d
@@ -1023,18 +1023,16 @@ static size_t newton_reciprocal(Slice d, Block* out, Block* buffer) {
 	Slice new_x  = { .data = buffer };
 	Slice dx     = { .data = new_x.data + new_x_cap };
 	Block* mul_buf = MUT(dx.data + dx_cap);
-
 	Block _1_data = 1;
 	Slice _1 = { .data = &_1_data, .size = 1 };
 	bool dx_sign;
 	bool out_sign;
-
 	printf("NEWTON_STEPS = %d\n", NEWTON_STEPS);
 
 	for (int i = 0; i < NEWTON_STEPS; i++) {
 		// x + x * (1 - d * x)
 		// d * x
-		dx.size = long_mul(d, x, MUT_DATA(dx));
+		dx.size = mul(d, x, MUT_DATA(dx), mul_buf);
 		printf("dx =           ");
 		print_slice_bin_point(dx, d_point + x_point);
 		printf("\n");
@@ -1060,18 +1058,29 @@ static size_t newton_reciprocal(Slice d, Block* out, Block* buffer) {
 		printf("(%u)\n", x.size);
 
 		// x * (1 - dx)
-		new_x.size = long_mul(x, dx, MUT_DATA(new_x));
+		new_x.size = mul(x, dx, MUT_DATA(new_x), mul_buf);
 
 		printf("x * (1 - dx) = ");
 		print_slice_bin_point(new_x, d_point + 2 * x_point);
 		printf("(%u)\n", new_x.size);
 
+		printf("x = ");
+		print_slice_bin_point(x, x_point);
+		printf("(%u)\n", x.size);
+		printf("d_point + x_point = %zu\n", d_point + x_point);
 		x.size = lshift(x, d_point + x_point, MUT_DATA(x));
+		printf("x = ");
+		print_slice_bin_point(x, d_point + 2 * x_point);
+		printf("(%u)\n", x.size);
 		x.size = add_signed(x, POSITIVE, new_x, dx_sign, MUT_DATA(x), &out_sign, true);
 		x_point += d_point + x_point;
+
+		printf("x = ");
+		print_slice_bin_point(x, x_point);
+		printf("(%u)\n", x.size);
 	}
 
-	print_slice_bin_point(x, x_point);
+	printf("\n");
 	printf("\n");
 	print_slice(x);
 	return x.size;

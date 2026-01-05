@@ -40,9 +40,10 @@ void bigint_init(void) {
 	_32_OVER_17_REM.size = 1;
 
 	size_t bufsize;
-	set_newton_precision(100);
+	set_newton_precision(1000);
 	size_t size = newton_reciprocal_size(TEN, &bufsize);
-	printf("%zu\n", bufsize);
+	printf("size: %zu\n", size);
+	printf("bufsize: %zu\n", bufsize);
 	Block* buf = ctx_buf_reserve(bufsize);
 	Block* out = malloc(sizeof(Block) * size);
 	newton_reciprocal(TEN, out, buf);
@@ -658,8 +659,8 @@ BigInt bigint_lshift_blocks(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 
 	size_t out_size = z->size + shift;
 	if (!bigint_resize(out_ptr, out_size)) return NULL;
-	memset((*out_ptr)->data, 0, shift * sizeof(Block));
 	memmove((*out_ptr)->data + shift, z->data, z->size * sizeof(Block));
+	memset((*out_ptr)->data, 0, shift * sizeof(Block));
 	return *out_ptr;
 }
 
