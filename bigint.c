@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include "elog.h"
 #include <errno.h>
+#include "bigint_rand.h"
 
 int bigint_errno = 0;
 
@@ -15,12 +16,16 @@ static unsigned long long cnt_free = 0;
 
 static Block* ctx_buf_reserve(size_t cap);
 
+#define AS_SLICE(x) (Slice) _Generic((x), \
+	BigInt: (Slice){ .data = (x)->data, .size = (x)->size })
+
 void bigint_init(void) {
 	ctx.buf = NULL;
 	ctx.bufsize = 0;
 
+	INITIAL_NEWTON_PRECISION = log2(17);
 	NEWTON_PRECISION = 4;
-	NEWTON_STEPS = ceil( log2( (NEWTON_PRECISION + 1) / log2(17) ) );
+	NEWTON_STEPS = 0;
 
 	_48_OVER_17.data = malloc(sizeof(Block));
 	_32_OVER_17.data = malloc(sizeof(Block));
@@ -39,14 +44,28 @@ void bigint_init(void) {
 	MUT_DATA(_32_OVER_17_REM)[0] = (32ULL << _32_OVER_17_POINT) % 17;
 	_32_OVER_17_REM.size = 1;
 
+	size_t precision = 1000;
+	BigInt rand_num = NULL;
+	bigint_rand(&rand_num, precision);
+	bigint_printf("%d\n", rand_num);
+
+	set_newton_precision(precision);
+
 	size_t bufsize;
-	set_newton_precision(1000);
 	size_t size = newton_reciprocal_size(TEN, &bufsize);
 	printf("size: %zu\n", size);
 	printf("bufsize: %zu\n", bufsize);
 	Block* buf = ctx_buf_reserve(bufsize);
-	Block* out = malloc(sizeof(Block) * size);
-	newton_reciprocal(TEN, out, buf);
+	Slice recipr = { .data = malloc(sizeof(Block) * size) };
+	recipr.size = newton_reciprocal(TEN, MUT_DATA(recipr), buf);
+	print_slice(recipr);
+	printf("(%u)\n", recipr.size);
+	size_t mul_bufsize = mul_buffer_size(MAX(recipr.size, rand_num->size));
+	buf = ctx_buf_reserve(mul_bufsize);
+	BigInt mul_res = bigint_alloc(rand_num->size + recipr.size);
+	mul_res->size = mul(AS_SLICE(rand_num), recipr, mul_res->data, buf);
+	mul_res->size = rshift(AS_SLICE(mul_res), precision + width(TEN), mul_res->data);
+	bigint_printf("%d\n", mul_res);
 
 	/*
 	print_slice_bin_point(_48_OVER_17, _48_OVER_17_POINT);
@@ -1183,6 +1202,7 @@ BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr) {
 
 bool set_newton_precision(size_t p) {
 	NEWTON_STEPS = ceil( log2( (p + 1) / log2(17) ) );
+
 	if (NEWTON_PRECISION >= p) return true;
 
 	const size_t blocks = (p - 1) / BLOCK_WIDTH + 1;

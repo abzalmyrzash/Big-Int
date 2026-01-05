@@ -36,6 +36,7 @@ int main()
 	*/
 
 	bigint_init();
+	bigint_finish();
 	return 0;
 	size_t p;
 	scanf("%zu", &p);

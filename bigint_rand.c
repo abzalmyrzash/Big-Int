@@ -17,17 +17,17 @@ BigInt bigint_rand(BigInt* z_ptr, size_t bits) {
 		int j;
 		for (j = rem_bits; j < BLOCK_WIDTH; j += RAND_WIDTH) {
 			rand_num = rand();
-			z->data[i] |= (DataBlock)rand_num << j;
+			z->data[i] |= (Block)rand_num << j;
 		}
 		rem_bits = j - BLOCK_WIDTH;
 		rand_num >>= RAND_WIDTH - rem_bits;
 	}
 	if (final_bits > 0) {
-		const DataBlock final_bits_mask = ((DataBlock)1 << final_bits) - 1;
+		const Block final_bits_mask = ((Block)1 << final_bits) - 1;
 		z->data[blocks] = rand_num;
 		for (int i = rem_bits; i < final_bits; i += RAND_WIDTH) {
 			rand_num = rand();
-			z->data[blocks] |= (DataBlock)rand_num << i;
+			z->data[blocks] |= (Block)rand_num << i;
 		}
 		z->data[blocks] &= final_bits_mask;
 	}

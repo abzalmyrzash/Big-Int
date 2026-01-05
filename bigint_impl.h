@@ -936,16 +936,15 @@ static const Slice _17_CONST = { .data = (Block*)&VALUE_17_CONST, .size = 1 };
 static Slice  _48_OVER_17 = { NULL, 0 };
 static size_t _48_OVER_17_CAP = 0;
 static size_t _48_OVER_17_POINT = 0;
-static size_t _48_OVER_17_PRECISION = 0;
 static Slice  _48_OVER_17_REM = { NULL, 0 };
 static size_t _48_OVER_17_REM_CAP = 0;
 static Slice  _32_OVER_17 = { NULL, 0 };
 static size_t _32_OVER_17_CAP = 0;
 static size_t _32_OVER_17_POINT = 0;
-static size_t _32_OVER_17_PRECISION = 0;
 static Slice  _32_OVER_17_REM = { NULL, 0 };
 static size_t _32_OVER_17_REM_CAP = 0;
 static size_t NEWTON_PRECISION = 0;
+static double INITIAL_NEWTON_PRECISION = 0;
 static int NEWTON_STEPS = 0;
 
 #define _17_WIDTH 5
@@ -953,19 +952,19 @@ static int NEWTON_STEPS = 0;
 #define _32_OVER_17_INT_WIDTH 1
 
 static size_t newton_reciprocal_size(Slice d, size_t* buf_size) {
-	const size_t d_point = width(d);
-	const size_t x_point = d_point + _32_OVER_17_POINT;
-	const size_t final_x_point = (x_point << NEWTON_STEPS) + (d_point << NEWTON_STEPS) - d_point;
-	const size_t final_x_size = final_x_point / BLOCK_WIDTH + 1;
+	const size_t final_x_size = 2 * NEWTON_PRECISION / BLOCK_WIDTH + 1;
 
-	const size_t prefinal_x_point = (x_point << (NEWTON_STEPS - 1)) + (d_point << (NEWTON_STEPS - 1)) - d_point;
-	const size_t final_dx_size = (prefinal_x_point + d_point) / BLOCK_WIDTH + 1;
+	const size_t dx_cap    = 2 * NEWTON_PRECISION / BLOCK_WIDTH + 1;
+	const size_t xdx_cap = 2 * NEWTON_PRECISION / BLOCK_WIDTH + 1;
+	const size_t mul_cap   = mul_buffer_size(dx_cap);
 
-	const size_t new_x_cap = final_x_size + 1;
-	const size_t dx_cap    = final_dx_size + 1;
-	const size_t mul_cap   = mul_buffer_size(final_dx_size);
+	/*
+	printf("dx_cap = %zu\n", dx_cap);
+	printf("xdx_cap = %zu\n", xdx_cap);
+	printf("mul_cap = %zu\n", mul_cap);
+	*/
 
-	*buf_size = new_x_cap + dx_cap + mul_cap;
+	*buf_size = xdx_cap + dx_cap + mul_cap;
 	return final_x_size + 1;
 }
 
@@ -982,6 +981,9 @@ static size_t newton_reciprocal(Slice d, Block* out, Block* buffer) {
 	const size_t d_point = width(d);
 	assert(d_point > 0);
 
+	double p = INITIAL_NEWTON_PRECISION;
+	size_t p_ceil = ceil(p);
+
 	// calculate initial estimate of x = 48/17 - 32/17 * d
 	Slice x = { .data = out };
 	Block* tmp = buffer;
@@ -992,37 +994,27 @@ static size_t newton_reciprocal(Slice d, Block* out, Block* buffer) {
 	// shift 48/17 so its point matches x_point
 	Slice _4817_shf = { .data = buffer };
 	_4817_shf.size = lshift(_48_OVER_17, x_point - _48_OVER_17_POINT, MUT_DATA(_4817_shf));
-	print_slice_bin_point(_4817_shf, x_point);
-	printf("\n");
-	print_slice_bin_point(x, x_point);
-	printf("\n");
 	// x = 48/17 - 32/17 * d
+
 	x.size = usub(_4817_shf, x, MUT_DATA(x));
+	/*
 	print_slice_bin_point(x, x_point);
 	printf("\n");
+	*/
+	x.size = rshift(x, x_point - p_ceil, MUT_DATA(x));
+	x_point = p_ceil;
+	/*
+	print_slice_bin_point(x, x_point);
+	printf("\n");
+	*/
 
-	// x1 = 2 * x + d;
-	// x2 = 2 * (2x + d) + d = 4x + 3d
-	// x3 = 2 * (4x + d) + d = 8x + 7d
-	// xn = 2^n * x + (2^n - 1) * d
-	const size_t final_x_point = (x_point << NEWTON_STEPS) + (d_point << NEWTON_STEPS) - d_point;
-	const size_t final_x_size = final_x_point / BLOCK_WIDTH + 1;
-	printf("final_x_point = %zu\n", final_x_point);
+	const size_t xdx_cap = 2 * NEWTON_PRECISION / BLOCK_WIDTH + 1;
+	const size_t dx_cap    = 2 * NEWTON_PRECISION / BLOCK_WIDTH + 1;
 
-	const size_t prefinal_x_point = (x_point << (NEWTON_STEPS - 1)) + (d_point << (NEWTON_STEPS - 1)) - d_point;
-	const size_t last_mul_size = (prefinal_x_point + d_point) / BLOCK_WIDTH + 1;
-	const size_t final_dx_size = (prefinal_x_point + d_point) / BLOCK_WIDTH + 1;
+	Slice dx       = { .data = buffer };
+	Slice xdx      = { .data = dx.data + dx_cap };
+	Block* mul_buf = MUT(xdx.data + xdx_cap);
 
-	const size_t new_x_cap = final_x_size + 1;
-	const size_t dx_cap    = final_dx_size + 1;
-	const size_t mul_cap   = mul_buffer_size(final_dx_size);
-	printf("new_x_cap = %zu\n", new_x_cap);
-	printf("dx_cap = %zu\n", dx_cap);
-	printf("mul_cap = %zu\n", mul_cap);
-
-	Slice new_x  = { .data = buffer };
-	Slice dx     = { .data = new_x.data + new_x_cap };
-	Block* mul_buf = MUT(dx.data + dx_cap);
 	Block _1_data = 1;
 	Slice _1 = { .data = &_1_data, .size = 1 };
 	bool dx_sign;
@@ -1030,12 +1022,18 @@ static size_t newton_reciprocal(Slice d, Block* out, Block* buffer) {
 	printf("NEWTON_STEPS = %d\n", NEWTON_STEPS);
 
 	for (int i = 0; i < NEWTON_STEPS; i++) {
+		// precision is doubled every iteration
+		p *= 2;
+		p_ceil = MIN(ceil(p), NEWTON_PRECISION);
+		// printf("p = %f\n", p);
 		// x + x * (1 - d * x)
 		// d * x
 		dx.size = mul(d, x, MUT_DATA(dx), mul_buf);
+		/*
 		printf("dx =           ");
 		print_slice_bin_point(dx, d_point + x_point);
 		printf("\n");
+		*/
 
 		// shift 1 by d_point + x_point
 		size_t shf = d_point + x_point;
@@ -1043,46 +1041,58 @@ static size_t newton_reciprocal(Slice d, Block* out, Block* buffer) {
 		size_t shf_bits = shf % BLOCK_WIDTH;
 		_1_data = 1ULL << shf_bits;
 
+		/*
 		printf("%zu\n", shf);
 		printf("_1 =           ");
-		print_slice_bin_point(_1, d_point + x_point);
+		print_slice_bin_point(_1, shf_bits);
 		printf("\n");
+		*/
 
 		// 1 - dx
 		dx.size = sub_sls(_1, shf_blocks, dx, MUT_DATA(dx), &dx_sign);
 
+		/*
 		printf("1 - dx =       ");
 		print_slice_bin_point(dx, d_point + x_point);
 		printf("(%u)\n", dx.size);
-		print_slice_bin_point(x, x_point);
-		printf("(%u)\n", x.size);
+		*/
 
 		// x * (1 - dx)
-		new_x.size = mul(x, dx, MUT_DATA(new_x), mul_buf);
+		xdx.size = mul(x, dx, MUT_DATA(xdx), mul_buf);
+		assert(d_point + 2 * x_point >= p_ceil);
+		xdx.size = rshift(xdx, d_point + 2 * x_point - p_ceil, MUT_DATA(xdx));
 
+		/*
 		printf("x * (1 - dx) = ");
-		print_slice_bin_point(new_x, d_point + 2 * x_point);
+		print_slice_bin_point(new_x, p_ceil);
 		printf("(%u)\n", new_x.size);
+		*/
 
-		printf("x = ");
-		print_slice_bin_point(x, x_point);
-		printf("(%u)\n", x.size);
-		printf("d_point + x_point = %zu\n", d_point + x_point);
-		x.size = lshift(x, d_point + x_point, MUT_DATA(x));
-		printf("x = ");
-		print_slice_bin_point(x, d_point + 2 * x_point);
-		printf("(%u)\n", x.size);
-		x.size = add_signed(x, POSITIVE, new_x, dx_sign, MUT_DATA(x), &out_sign, true);
-		x_point += d_point + x_point;
+		assert(p_ceil >= x_point);
+		x.size = lshift(x, p_ceil - x_point, MUT_DATA(x));
 
+		/*
 		printf("x = ");
-		print_slice_bin_point(x, x_point);
+		print_slice_bin_point(x, p_ceil);
 		printf("(%u)\n", x.size);
+		*/
+		x.size = add_signed(x, POSITIVE, xdx, dx_sign, MUT_DATA(x), &out_sign, true);
+		x_point = p_ceil;
+
+		/*
+		printf("x = ");
+		print_slice_bin_point(x, p_ceil);
+		printf("(%u)\n", x.size);
+		*/
 	}
 
+	x.size = rshift(x, x_point - NEWTON_PRECISION, MUT_DATA(x));
+	/*
 	printf("\n");
 	printf("\n");
 	print_slice(x);
+	printf("\n");
+	*/
 	return x.size;
 }
 
