@@ -536,11 +536,14 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 	assert(a);
 	assert(b);
 	assert(out_ptr);
+
 	if (b->size == 0) {
 		bigint_errno = BIGINT_ERR_DIV_BY_ZERO;
 		ELOG_STR("DIVISION BY ZERO");
 		return NULL;
 	}
+
+	u64 restore_pos = arena->pos;
 
 	BigInt out = *out_ptr;
 	BigInt rem = rem_ptr ? *rem_ptr : NULL;
@@ -548,65 +551,15 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 	Slice A = { .data = a->data, .size = a->size };
 	Slice B = { .data = b->data, .size = b->size };
 
-	if (bigint_ucmp_small(b, 1) == 0) {
-		out = bigint_copy(&out, a);
-		if (!out) goto error;
-		if (rem_ptr) {
-			rem = bigint_set_zero(&rem);
-			if (!rem) goto error;
-		}
-		goto ret;
-	}
-
-	int cmp_res = cmp(A, B);
-
-	if (cmp_res < 0) {
-		if (rem_ptr) {
-			rem = bigint_copy(&rem, a);
-			if (!rem) goto error;
-		}
-		out = bigint_set_zero(&out);
-		if (!out) goto error;
-		goto ret;
-	}
-
-	else if (cmp_res == 0) {
-		if (rem_ptr) {
-			rem = bigint_set_zero(&rem);
-			if (!rem) goto error;
-		}
-		out = bigint_set_usmall(&out, 1);
-		if (!out) goto error;
-		goto ret;
-	}
-	
-	size_t bufsize_blocks = b->size + 1;
-	if (out == a) {
-		bufsize_blocks += a->size;
-	} else if (out == b) {
-		bufsize_blocks += b->size;
-	}
-	if (rem == b) {
-		bufsize_blocks += b->size;
-	}
-	else if (!rem_ptr) {
-		bufsize_blocks += a->size;
-	}
-
-	Block* buf = ctx_buf_reserve(bufsize_blocks);
-	if (!buf) {
-		goto error;
-	}
-
 	Block* rem_data;
 	size_t rem_size;
 
 	if (out == a) {
-		A.data = memcpy(buf, A.data, A.size * sizeof(Block));
-		buf += a->size;
+		Block* tmp = PUSH_ARRAY(arena, Block, A.size);
+		A.data = memcpy(tmp, A.data, A.size * sizeof(Block));
 	} else if (out == b) {
-		B.data = memcpy(buf, B.data, B.size * sizeof(Block));
-		buf += b->size;
+		Block* tmp = PUSH_ARRAY(arena, Block, B.size);
+		B.data = memcpy(tmp, B.data, B.size * sizeof(Block));
 	}
 
 	out = bigint_reserve(&out, A.size - B.size + 1, CLEAR_DATA);
@@ -617,22 +570,23 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 		if (!rem) goto error;
 		rem_data = rem->data;
 		if (rem == b) {
-			B.data = memcpy(buf, B.data, B.size * sizeof(Block));
-			buf += b->size;
+			Block* tmp = PUSH_ARRAY(arena, Block, B.size);
+			B.data = memcpy(tmp, B.data, B.size * sizeof(Block));
 		}
 	} else {
-		rem_data = buf;
-		buf += a->size;
+		rem_data = PUSH_ARRAY(arena, Block, A.size);
 	}
 
 	out->size = long_div(A, B, out->data, rem_data, &rem_size);
 	if (rem) rem->size = rem_size;
 
 ret:
+	arena_pop_to(arena, restore_pos);
 	if (rem_ptr) *rem_ptr = rem;
 	return *out_ptr = out;
 
 error:
+	arena_pop_to(arena, restore_pos);
 	return NULL;
 }
 
@@ -1007,15 +961,10 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 
 	const size_t q_cap = z->size;
 	const size_t tmp_cap = z->size;
-	static const size_t div_buf_cap = 2;
 
-	const size_t bufsize = q_cap + tmp_cap + div_buf_cap;
-	Block* const buf = ctx_buf_reserve(bufsize);
-	if (!buf) return NULL;
-
-	Block* const q_data = buf;
-	Block* const tmp_data = q_data + q_cap;
-	Block* const div_buf = tmp_data + tmp_cap;
+	u64 restore_pos = arena->pos;
+	Block* const q_data = PUSH_ARRAY(arena, Block, q_cap);
+	Block* const tmp_data = PUSH_ARRAY(arena, Block, tmp_cap);
 	Slice tmp = {
 		.data = tmp_data,
 		.size = copy(Z, tmp_data)
@@ -1052,6 +1001,7 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 	}
 	digits[cnt] = '\0';
 
+	arena_pop_to(arena, restore_pos);
 	return str;
 }
 
@@ -1144,13 +1094,11 @@ BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr) {
 	const size_t pow10_cap = cap + 1;
 	const size_t digit_cap = cap + 1;
 	const size_t tmp_cap = cap;
-	const size_t buf_size = pow10_cap + digit_cap + tmp_cap;
-	Block* const buf = ctx_buf_reserve(buf_size);
-	if (!buf) return NULL;
 
-	Block* const pow10_data = buf;
-	Block* const digit_data = pow10_data + pow10_cap;
-	Block* const tmp_data = digit_data + digit_cap;
+	u64 restore_pos = arena->pos;
+	Block* const pow10_data = PUSH_ARRAY(arena, Block, pow10_cap);
+	Block* const digit_data = PUSH_ARRAY(arena, Block, digit_cap);
+	Block* const tmp_data = PUSH_ARRAY(arena, Block, tmp_cap);
 	Slice pow10 = { .data = pow10_data, .size = 1 };
 	pow10_data[0] = 1;
 	Slice digit = { .data = digit_data };
@@ -1173,6 +1121,7 @@ BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr) {
 		pow10.size = mul(tmp, TEN, pow10_data);
 	}
 
+	arena_pop_to(arena, restore_pos);
 	return out;
 }
 
@@ -1257,12 +1206,9 @@ BigInt bigint_urecpr(ConstBigInt d, size_t precision, BigInt* out_ptr) {
 		ELOG_STR("DIVISION BY ZERO");
 		return NULL;
 	}
-	size_t bufsize;
 	size_t size = newton_reciprocal_cap(precision);
 	BigInt out = bigint_reserve(out_ptr, size, CLEAR_DATA);
 	if (!out) return NULL;
-	Block* buf = ctx_buf_reserve(bufsize);
-	if (!buf) return NULL;
 	out->size = newton_reciprocal(AS_SLICE(d), precision, out->data);
 	return out;
 }
@@ -1287,15 +1233,13 @@ BigInt bigint_udiv_recpr(ConstBigInt num, ConstBigInt denum, ConstBigInt recpr, 
 		ELOG_STR("DIVISION BY ZERO");
 		return NULL;
 	}
-	size_t rem_size, buf_size;
-	size_t quo_size = div_recpr_cap(num->size, denum->size, recpr->size, precision, &rem_size, &buf_size);
+	size_t rem_size;
+	size_t quo_size = div_recpr_cap(num->size, denum->size, recpr->size, precision, &rem_size);
 	*quo = bigint_reserve(quo, quo_size, CLEAR_DATA);
 	if (!*quo) return NULL;
 	*rem = bigint_reserve(rem, rem_size, CLEAR_DATA);
 	if (!*rem) return NULL;
-	Block* buf = ctx_buf_reserve(buf_size);
-	if (!buf) return NULL;
-	(*quo)->size = div_recpr(AS_SLICE(num), AS_SLICE(denum), AS_SLICE(recpr), precision, (*quo)->data, (*rem)->data, &rem_size, buf);
+	(*quo)->size = div_recpr(AS_SLICE(num), AS_SLICE(denum), AS_SLICE(recpr), precision, (*quo)->data, (*rem)->data, &rem_size);
 	(*rem)->size = rem_size;
 	return *quo;
 }

@@ -1201,11 +1201,10 @@ static size_t newton_reciprocal(Slice d, size_t precision, Block* out) {
 	return x.size;
 }
 
-static size_t div_recpr_cap(size_t num_size, size_t denum_size, size_t recpr_size, size_t precision, size_t* rem_cap, size_t* buf_cap) {
+static size_t div_recpr_cap(size_t num_size, size_t denum_size, size_t recpr_size, size_t precision, size_t* rem_cap) {
 	assert(denum_size);
 	const size_t denum_width = denum_size * BLOCK_WIDTH;
 	const size_t quo_cap = num_size + recpr_size;
-	// assert(precision + denum_width > 1);
 	const size_t shf = precision + denum_width;
 	const size_t shf_quo_cap = quo_cap - shf / BLOCK_WIDTH;
 	const size_t dq_cap = denum_size + shf_quo_cap;
@@ -1214,7 +1213,7 @@ static size_t div_recpr_cap(size_t num_size, size_t denum_size, size_t recpr_siz
 }
 
 // divide using reciprocal
-static size_t div_recpr(Slice num, Slice denum, Slice recpr, size_t precision, Block* quo_data, Block* rem_data, size_t* rem_size, Block* buffer) {
+static size_t div_recpr(Slice num, Slice denum, Slice recpr, size_t precision, Block* quo_data, Block* rem_data, size_t* rem_size) {
 	assert(denum.size);
 	const size_t denum_width = width(denum);
 	const size_t quo_cap = num.size + recpr.size;
@@ -1227,7 +1226,7 @@ static size_t div_recpr(Slice num, Slice denum, Slice recpr, size_t precision, B
 	quo.size = mul(num, recpr, quo_data);
 	quo.size = rshift(quo, shf, quo_data);
 
-	Slice dq = { .data = buffer };
+	Slice dq = { .data = PUSH_ARRAY(arena, Block, dq_cap) };
 	dq.size = mul(denum, quo, MUT_DATA(dq));
 
 	Slice rem = { .data = rem_data };
