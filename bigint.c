@@ -16,15 +16,18 @@ static unsigned long long cnt_free = 0;
 
 static Block* ctx_buf_reserve(size_t cap);
 
-#define AS_SLICE(x) (Slice) _Generic((x), \
-	BigInt: (Slice){ .data = (x)->data, .size = (x)->size })
+#define AS_SLICE(x) (Slice) _Generic((x),                         \
+	BigInt:      (Slice){ .data = (x)->data, .size = (x)->size }, \
+	ConstBigInt: (Slice){ .data = (x)->data, .size = (x)->size })
 
 void bigint_init(void) {
 	ctx.buf = NULL;
 	ctx.bufsize = 0;
+	arena = arena_create(GiB(1), sizeof(mem_arena));
+	int i = arena->pos;
+	printf("%d\n", i);
 
 	INITIAL_NEWTON_PRECISION = log2(17);
-	NEWTON_PRECISION = 4;
 	NEWTON_STEPS = 0;
 
 	_48_OVER_17.data = malloc(sizeof(Block));
@@ -32,40 +35,19 @@ void bigint_init(void) {
 	_48_OVER_17_REM.data = malloc(sizeof(Block));
 	_32_OVER_17_REM.data = malloc(sizeof(Block));
 
-	_48_OVER_17_POINT = NEWTON_PRECISION - _48_OVER_17_INT_WIDTH;
+	_48_OVER_17_POINT = INITIAL_NEWTON_PRECISION;
+	_48_OVER_17_WIDTH = _48_OVER_17_INT_WIDTH + _48_OVER_17_POINT;
 	MUT_DATA(_48_OVER_17)[0] = (48ULL << _48_OVER_17_POINT) / 17;
 	_48_OVER_17.size = 1;
 	MUT_DATA(_48_OVER_17_REM)[0] = (48ULL << _48_OVER_17_POINT) % 17;
 	_48_OVER_17_REM.size = 1;
 
-	_32_OVER_17_POINT = NEWTON_PRECISION - _32_OVER_17_INT_WIDTH;
+	_32_OVER_17_POINT = INITIAL_NEWTON_PRECISION;
+	_32_OVER_17_WIDTH = _32_OVER_17_INT_WIDTH + _32_OVER_17_POINT;
 	MUT_DATA(_32_OVER_17)[0] = (32ULL << _32_OVER_17_POINT) / 17;
 	_32_OVER_17.size = 1;
 	MUT_DATA(_32_OVER_17_REM)[0] = (32ULL << _32_OVER_17_POINT) % 17;
 	_32_OVER_17_REM.size = 1;
-
-	size_t precision = 1000;
-	BigInt rand_num = NULL;
-	bigint_rand(&rand_num, precision);
-	bigint_printf("%d\n", rand_num);
-
-	set_newton_precision(precision);
-
-	size_t bufsize;
-	size_t size = newton_reciprocal_size(TEN, &bufsize);
-	printf("size: %zu\n", size);
-	printf("bufsize: %zu\n", bufsize);
-	Block* buf = ctx_buf_reserve(bufsize);
-	Slice recipr = { .data = malloc(sizeof(Block) * size) };
-	recipr.size = newton_reciprocal(TEN, MUT_DATA(recipr), buf);
-	print_slice(recipr);
-	printf("(%u)\n", recipr.size);
-	size_t mul_bufsize = mul_buffer_size(MAX(recipr.size, rand_num->size));
-	buf = ctx_buf_reserve(mul_bufsize);
-	BigInt mul_res = bigint_alloc(rand_num->size + recipr.size);
-	mul_res->size = mul(AS_SLICE(rand_num), recipr, mul_res->data, buf);
-	mul_res->size = rshift(AS_SLICE(mul_res), precision + width(TEN), mul_res->data);
-	bigint_printf("%d\n", mul_res);
 
 	/*
 	print_slice_bin_point(_48_OVER_17, _48_OVER_17_POINT);
@@ -77,6 +59,7 @@ void bigint_init(void) {
 	print_slice_bin(_32_OVER_17_REM);
 	printf("\n");
 	*/
+
 }
 
 void bigint_finish(void) {
@@ -225,7 +208,8 @@ size_t bigint_size(ConstBigInt z) {
 	return z->size;
 }
 
-static inline size_t bitsize(ConstBigInt z) {
+size_t bigint_width(ConstBigInt z) {
+	if (z->size == 0) return 0;
 	return z->size * BLOCK_WIDTH - CLZ(z->data[z->size - 1]);
 }
 
@@ -403,8 +387,7 @@ BigInt bigint_uadd(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 	return out;
 }
 
-// |out| = |a| - |b|,
-// assumes |a| >= |b|
+// out = |a| - |b|
 BigInt bigint_usub(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 	assert(a);
 	assert(b);
@@ -424,6 +407,7 @@ BigInt bigint_usub(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 	if (!out) return NULL;
 	bool sign;
 	out->size = sub(A, B, out->data, &sign);
+	out->sign = sign;
 	return out;
 }
 
@@ -499,30 +483,24 @@ BigInt bigint_umul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 	const size_t cap = a->size + b->size;
 
 	BigInt out = *out_ptr;
-	const size_t mul_buf_size = mul_buffer_size(n);
 
-	Slice A = { .data = a->data, .size = a->size };
-	Slice B = { .data = b->data, .size = b->size };
+	Slice A = AS_SLICE(a);
+	Slice B = AS_SLICE(b);
 
-	Block* buf = ctx_buf_reserve(
-			mul_buf_size
-			+ (out == a) * A.size
-			+ (out == b) * B.size);
-	if (!buf) goto error;
-
+	u64 restore_pos = arena->pos;
 	if (out == a) {
-		A.data = memcpy(ctx.buf, A.data, A.size * sizeof(Block));
-		buf += A.size;
+		Block* tmp = PUSH_ARRAY(arena, Block, A.size);
+		A.data = memcpy(tmp, A.data, A.size * sizeof(Block));
 	}
-	else if (out == b) {
-		B.data = memcpy(ctx.buf, B.data, B.size * sizeof(Block));
-		buf += B.size;
+	if (out == b) {
+		Block* tmp = PUSH_ARRAY(arena, Block, B.size);
+		B.data = memcpy(tmp, B.data, B.size * sizeof(Block));
 	}
 
 	out = bigint_reserve(&out, cap, CLEAR_DATA);
 	if (!out) goto error;
 
-	out->size = mul(A, B, out->data, buf);
+	out->size = mul(A, B, out->data);
 	assert(out->size <= cap);
 	assert(out->size == size_without_zeros(out->data, out->size));
 	assert(({
@@ -532,6 +510,8 @@ BigInt bigint_umul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 		free(check);
 		cmp_res == 0;
 	}));
+
+	arena_pop_to(arena, restore_pos);
 
 	return *out_ptr = out;
 error:
@@ -619,7 +599,7 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 	}
 
 	Block* rem_data;
-	CapField rem_size;
+	size_t rem_size;
 
 	if (out == a) {
 		A.data = memcpy(buf, A.data, A.size * sizeof(Block));
@@ -645,7 +625,7 @@ BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_pt
 		buf += a->size;
 	}
 
-	out->size = long_div(A, B, out->data, rem_data, &rem_size, buf);
+	out->size = long_div(A, B, out->data, rem_data, &rem_size);
 	if (rem) rem->size = rem_size;
 
 ret:
@@ -788,14 +768,10 @@ BigInt bigint_powmod(ConstBigInt a, ConstBigInt pow, ConstBigInt mod, BigInt* ou
 	BigInt out = bigint_reserve(out_ptr, mod->size, CLEAR_DATA);
 	if (!out) return NULL;
 
-	const size_t buf_size = powmod_buffer_size(mod->size);
-	Block* buf = ctx_buf_reserve(buf_size);
-	if (!buf) return NULL;
-
 	Slice A = { a->data, a->size };
 	Slice Pow = { pow->data, pow->size };
 	Slice Mod = { mod->data, mod->size };
-	out->size = powmod(A, Pow, Mod, out->data, buf);
+	out->size = powmod(A, Pow, Mod, out->data);
 	return out;
 }
 
@@ -1046,10 +1022,10 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 	};
 
 	USmallInt rem;
-	CapField rem_size;
+	size_t rem_size;
 
 	while (tmp.size > 0) {
-		tmp.size = long_div(tmp, TEN, q_data, tmp_data, &rem_size, div_buf);
+		tmp.size = long_div(tmp, TEN, q_data, tmp_data, &rem_size);
 		assert((rem_size == 1 && tmp_data[0] < 10) || rem_size == 0);
 		rem = rem_size ? tmp_data[0] : 0;
 		assert(cnt < max_digits + max_spaces || ({
@@ -1189,87 +1165,153 @@ BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr) {
 		}
 		tmp.size = set_usmall(tmp_data, ch - '0');
 
-		digit.size = long_mul(tmp, pow10, digit_data);
+		digit.size = mul(tmp, pow10, digit_data);
 		out->size = add((Slice){out->data, out->size}, digit, out->data, true);
 		if (i == 0) break;
 		i--;
 		tmp.size = copy(pow10, tmp_data);
-		pow10.size = long_mul(tmp, TEN, pow10_data);
+		pow10.size = mul(tmp, TEN, pow10_data);
 	}
 
 	return out;
 }
 
+/*
 bool set_newton_precision(size_t p) {
 	NEWTON_STEPS = ceil( log2( (p + 1) / log2(17) ) );
 
-	if (NEWTON_PRECISION >= p) return true;
-
-	const size_t blocks = (p - 1) / BLOCK_WIDTH + 1;
-
-	size_t dp = p - NEWTON_PRECISION;
-	size_t dp_blocks = dp / BLOCK_WIDTH;
-	size_t dp_bits = dp % BLOCK_WIDTH;
-	size_t rem_cap = (dp + _17_WIDTH - 1) / BLOCK_WIDTH + 1;
-
-	Block* tmp;
-	if (_48_OVER_17_CAP < blocks) {
-		tmp = realloc(MUT_DATA(_48_OVER_17), sizeof(Block) * blocks);
-		if (!tmp) return false;
-		_48_OVER_17.data = tmp;
-		_48_OVER_17_CAP = blocks;
-	}
-	if (_32_OVER_17_CAP < blocks) {
-		tmp = realloc(MUT_DATA(_32_OVER_17), sizeof(Block) * blocks);
-		if (!tmp) return false;
-		_32_OVER_17.data = tmp;
-		_32_OVER_17_CAP = blocks;
-	}
-
-	if (_48_OVER_17_REM_CAP < rem_cap) {
-		tmp = realloc(MUT_DATA(_48_OVER_17_REM), sizeof(Block) * rem_cap);
-		if (!tmp) return false;
-		_48_OVER_17_REM.data = tmp;
-		_48_OVER_17_REM_CAP = rem_cap;
-	}
-	if (_32_OVER_17_REM_CAP < rem_cap) {
-		tmp = realloc(MUT_DATA(_32_OVER_17_REM), sizeof(Block) * rem_cap);
-		if (!tmp) return false;
-		_32_OVER_17_REM.data = tmp;
-		_32_OVER_17_REM_CAP = rem_cap;
-	}
-
-	_48_OVER_17.size = lshift(_48_OVER_17, dp, MUT_DATA(_48_OVER_17));
-	Block _4817_mid_block = _48_OVER_17.data[dp_blocks];
-	_32_OVER_17.size = lshift(_32_OVER_17, dp, MUT_DATA(_32_OVER_17));
-	Block _3217_mid_block = _32_OVER_17.data[dp_blocks];
-
-	Block* div_buf = ctx_buf_reserve(2);
-
-	_48_OVER_17_REM.size = lshift(_48_OVER_17_REM, dp, MUT_DATA(_48_OVER_17_REM));
-	long_div(_48_OVER_17_REM, _17_CONST,
-			(Block*)_48_OVER_17.data, (Block*)_48_OVER_17_REM.data, &_48_OVER_17_REM.size, div_buf);
-	MUT_DATA(_48_OVER_17)[dp_blocks] |= _4817_mid_block;
-	_48_OVER_17_POINT += dp;
-
-	_32_OVER_17_REM.size = lshift(_32_OVER_17_REM, dp, MUT_DATA(_32_OVER_17_REM));
-	long_div(_32_OVER_17_REM, _17_CONST,
-			(Block*)_32_OVER_17.data, (Block*)_32_OVER_17_REM.data, &_32_OVER_17_REM.size, div_buf);
-	MUT_DATA(_32_OVER_17)[dp_blocks] |= _3217_mid_block;
-	_32_OVER_17_POINT += dp;
-
-	/*
-	print_slice_bin_point(_48_OVER_17, _48_OVER_17_POINT);
-	printf(":");
-	print_slice(_48_OVER_17_REM);
-	printf("\n");
-	print_slice_bin_point(_32_OVER_17, _32_OVER_17_POINT);
-	printf(":");
-	print_slice(_32_OVER_17_REM);
-	printf("\n");
-	*/
+//	if (p > NEWTON_PRECISION) {
+//		const size_t blocks = (p - 1) / BLOCK_WIDTH + 1;
+//
+//		size_t dp = p - NEWTON_PRECISION;
+//		size_t dp_blocks = dp / BLOCK_WIDTH;
+//		size_t dp_bits = dp % BLOCK_WIDTH;
+//		size_t rem_cap = (dp + _17_WIDTH - 1) / BLOCK_WIDTH + 1;
+//
+//		Block* tmp;
+//		if (_48_OVER_17_CAP < blocks) {
+//			tmp = realloc(MUT_DATA(_48_OVER_17), sizeof(Block) * blocks);
+//			if (!tmp) return false;
+//			_48_OVER_17.data = tmp;
+//			_48_OVER_17_CAP = blocks;
+//		}
+//		if (_32_OVER_17_CAP < blocks) {
+//			tmp = realloc(MUT_DATA(_32_OVER_17), sizeof(Block) * blocks);
+//			if (!tmp) return false;
+//			_32_OVER_17.data = tmp;
+//			_32_OVER_17_CAP = blocks;
+//		}
+//
+//		if (_48_OVER_17_REM_CAP < rem_cap) {
+//			tmp = realloc(MUT_DATA(_48_OVER_17_REM), sizeof(Block) * rem_cap);
+//			if (!tmp) return false;
+//			_48_OVER_17_REM.data = tmp;
+//			_48_OVER_17_REM_CAP = rem_cap;
+//		}
+//		if (_32_OVER_17_REM_CAP < rem_cap) {
+//			tmp = realloc(MUT_DATA(_32_OVER_17_REM), sizeof(Block) * rem_cap);
+//			if (!tmp) return false;
+//			_32_OVER_17_REM.data = tmp;
+//			_32_OVER_17_REM_CAP = rem_cap;
+//		}
+//
+//		_48_OVER_17.size = lshift(_48_OVER_17, dp, MUT_DATA(_48_OVER_17));
+//		Block _4817_mid_block = _48_OVER_17.data[dp_blocks];
+//		_32_OVER_17.size = lshift(_32_OVER_17, dp, MUT_DATA(_32_OVER_17));
+//		Block _3217_mid_block = _32_OVER_17.data[dp_blocks];
+//
+//		Block* div_buf = ctx_buf_reserve(2);
+//
+//		_48_OVER_17_REM.size = lshift(_48_OVER_17_REM, dp, MUT_DATA(_48_OVER_17_REM));
+//		long_div(_48_OVER_17_REM, _17_CONST,
+//				(Block*)_48_OVER_17.data, (Block*)_48_OVER_17_REM.data, &_48_OVER_17_REM.size, div_buf);
+//		MUT_DATA(_48_OVER_17)[dp_blocks] |= _4817_mid_block;
+//		_48_OVER_17_POINT += dp;
+//
+//		_32_OVER_17_REM.size = lshift(_32_OVER_17_REM, dp, MUT_DATA(_32_OVER_17_REM));
+//		long_div(_32_OVER_17_REM, _17_CONST,
+//				(Block*)_32_OVER_17.data, (Block*)_32_OVER_17_REM.data, &_32_OVER_17_REM.size, div_buf);
+//		MUT_DATA(_32_OVER_17)[dp_blocks] |= _3217_mid_block;
+//		_32_OVER_17_POINT += dp;
+//
+//		// print_slice_bin_point(_48_OVER_17, _48_OVER_17_POINT);
+//		// printf(":");
+//		// print_slice(_48_OVER_17_REM);
+//		// printf("\n");
+//		// print_slice_bin_point(_32_OVER_17, _32_OVER_17_POINT);
+//		// printf(":");
+//		// print_slice(_32_OVER_17_REM);
+//		// printf("\n");
+//	}
 
 	NEWTON_PRECISION = p;
 	return true;
+}
+*/
+
+BigInt bigint_urecpr(ConstBigInt d, size_t precision, BigInt* out_ptr) {
+	assert(d);
+	assert(out_ptr);
+	if (d->size == 0) {
+		bigint_errno = BIGINT_ERR_DIV_BY_ZERO;
+		ELOG_STR("DIVISION BY ZERO");
+		return NULL;
+	}
+	size_t bufsize;
+	size_t size = newton_reciprocal_cap(precision);
+	BigInt out = bigint_reserve(out_ptr, size, CLEAR_DATA);
+	if (!out) return NULL;
+	Block* buf = ctx_buf_reserve(bufsize);
+	if (!buf) return NULL;
+	out->size = newton_reciprocal(AS_SLICE(d), precision, out->data);
+	return out;
+}
+
+BigInt bigint_recpr(ConstBigInt d, size_t precision, BigInt* out_ptr) {
+	assert(d);
+	assert(out_ptr);
+	BigInt out = bigint_urecpr(d, precision, out_ptr);
+	if (!out) return NULL;
+	out->sign = d->sign;
+	return out;
+}
+
+BigInt bigint_udiv_recpr(ConstBigInt num, ConstBigInt denum, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem) {
+	assert(num);
+	assert(denum);
+	assert(recpr);
+	assert(quo);
+	assert(rem);
+	if (denum->size == 0) {
+		bigint_errno = BIGINT_ERR_DIV_BY_ZERO;
+		ELOG_STR("DIVISION BY ZERO");
+		return NULL;
+	}
+	size_t rem_size, buf_size;
+	size_t quo_size = div_recpr_cap(num->size, denum->size, recpr->size, precision, &rem_size, &buf_size);
+	*quo = bigint_reserve(quo, quo_size, CLEAR_DATA);
+	if (!*quo) return NULL;
+	*rem = bigint_reserve(rem, rem_size, CLEAR_DATA);
+	if (!*rem) return NULL;
+	Block* buf = ctx_buf_reserve(buf_size);
+	if (!buf) return NULL;
+	(*quo)->size = div_recpr(AS_SLICE(num), AS_SLICE(denum), AS_SLICE(recpr), precision, (*quo)->data, (*rem)->data, &rem_size, buf);
+	(*rem)->size = rem_size;
+	return *quo;
+}
+
+BigInt bigint_div_recpr(ConstBigInt num, ConstBigInt denum, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem) {
+	assert(num);
+	assert(denum);
+	assert(recpr);
+	assert(quo);
+	assert(rem);
+	bool quo_sign = num->sign ^ denum->sign;
+	bool rem_sign = num->sign;
+	BigInt out = bigint_udiv_recpr(num, denum, recpr, precision, quo, rem);
+	if (!out) return NULL;
+	out->sign = quo_sign;
+	(*rem)->sign = rem_sign;
+	return out;
 }
 

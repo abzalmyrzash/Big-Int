@@ -2,6 +2,7 @@
 #include "bigint_rand.h"
 #include "fib.h"
 #include "factorial.h"
+#include "utils.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -36,18 +37,13 @@ int main()
 	*/
 
 	bigint_init();
-	bigint_finish();
-	return 0;
-	size_t p;
-	scanf("%zu", &p);
-	set_newton_precision(p);
-	return 0;
 
 	BigInt A = NULL;
 	BigInt B = NULL;
 	BigInt C = NULL;
 	BigInt res = NULL;
 	BigInt rem = NULL;
+	BigInt recpr = NULL;
 
 	constexpr int buffer_size = 102400;
 	char buffer[buffer_size];
@@ -66,21 +62,6 @@ int main()
 	// bigint_printf("%0_d\n", B, B);
 	printf("Size: %zu\n", bigint_size(B));
 
-	printf("Enter c: ");
-	fgets(buffer, buffer_size, stdin);
-	bigint_scan(buffer, &C);
-	bigint_printf("%p0_x\n", C, C);
-	// bigint_printf("%0_d\n", B, B);
-	printf("Size: %zu\n", bigint_size(C));
-
-	bigint_powmod(A, B, C, &res);
-	printf("Size: %zu\n", bigint_size(res));
-	fflush(stdout);
-	bigint_printf("%p0_x\n", res);
-	fflush(stdout);
-	bigint_printf("%d\n", res);
-
-	return 0;
 	res = bigint_alloc(bigint_size(A) + bigint_size(B));
 
 	bigint_add(A, B, &res);
@@ -116,6 +97,14 @@ int main()
 	bigint_printf("%d\n", res);
 
 	assert(bigint_cmp(res, A) == 0);
+
+	size_t precision = MAX(bigint_width(A), bigint_width(B));
+	bigint_recpr(B, precision, &recpr);
+	bigint_printf("1 / B = ");
+	bigint_printf("%px\n", recpr);
+	bigint_div_recpr(A, B, recpr, precision, &res, &rem);
+	bigint_printf("A / B (using reciprocal) = %d\n", res);
+	bigint_printf("A %% B (using reciprocal) = %d\n", rem);
 
 	bigint_free(A);
 	bigint_free(B);

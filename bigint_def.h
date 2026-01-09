@@ -22,6 +22,6 @@ struct bigint {
 
 typedef struct {
 	const BigInt_Block* data;
-	BigInt_CapField size;
+	size_t size;
 } BigInt_Slice;
 

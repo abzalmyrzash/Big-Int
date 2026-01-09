@@ -38,6 +38,7 @@ void bigint_structinfo(void);
 void bigint_memstat(void);
 
 size_t bigint_size(ConstBigInt z);
+size_t bigint_width(ConstBigInt z);
 size_t bigint_cap(ConstBigInt z);
 bool   bigint_sign(ConstBigInt z);
 const BigInt_Block* bigint_data(ConstBigInt z);
@@ -80,7 +81,7 @@ BigInt bigint_usub(ConstBigInt a, ConstBigInt b, BigInt* out);
 BigInt bigint_umul(ConstBigInt a, ConstBigInt b, BigInt* out);
 
 // unsigned division
-BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out, BigInt* rem);
+BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* quo, BigInt* rem);
 
 // signed addition
 BigInt bigint_add(ConstBigInt a, ConstBigInt b, BigInt* out);
@@ -92,7 +93,7 @@ BigInt bigint_sub(ConstBigInt a, ConstBigInt b, BigInt* out);
 BigInt bigint_mul(ConstBigInt a, ConstBigInt b, BigInt* out);
 
 // signed division
-BigInt bigint_div(ConstBigInt a, ConstBigInt b, BigInt* out, BigInt* rem);
+BigInt bigint_div(ConstBigInt a, ConstBigInt b, BigInt* quo, BigInt* rem);
 
 // a^pow % mod (unsigned)
 BigInt bigint_powmod(ConstBigInt a, ConstBigInt pow, ConstBigInt mod, BigInt* out_ptr);
@@ -111,4 +112,10 @@ BigInt bigint_scan(const char* str, BigInt* out);
 int bigint_fprintf(FILE* file, const char* const format, ...);
 int bigint_printf(const char* const format, ...);
 
-bool set_newton_precision(size_t p);
+// bool set_newton_precision(size_t p);
+BigInt bigint_urecpr(ConstBigInt d, size_t precision, BigInt* out);
+BigInt bigint_recpr(ConstBigInt d, size_t precision, BigInt* out);
+
+// divide using reciprocal
+BigInt bigint_udiv_recpr(ConstBigInt n, ConstBigInt d, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem);
+BigInt bigint_div_recpr(ConstBigInt n, ConstBigInt d, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem);
