@@ -25,3 +25,8 @@ typedef struct {
 	size_t size;
 } BigInt_Slice;
 
+typedef struct {
+	BigInt_Block* data;
+	size_t* size;
+} BigInt_OutSlice;
+

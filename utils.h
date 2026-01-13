@@ -20,3 +20,10 @@ typedef i32 b32;
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define ALIGN_UP_POW2(n, p) (((u64)(n) + ((u64)(p) - 1)) & (~((u64)(p) - 1)))
+
+#define LOG10_2 0.30102999566398119521373889472449 
+
+inline u64 ceil_div(u64 n, u64 d) {
+	if (n == 0) return 0;
+	return (n - 1) / d + 1;
+}

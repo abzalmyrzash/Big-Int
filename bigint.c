@@ -1,31 +1,24 @@
 #include "bigint_impl.h"
+#include "elog.h"
 #include <assert.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <stdarg.h>
-#include "elog.h"
-#include <errno.h>
-#include "bigint_rand.h"
+#include <time.h>
 
 int bigint_errno = 0;
-
-static thread_local Context ctx;
 
 static unsigned long long cnt_alloc = 0;
 static unsigned long long cnt_realloc = 0;
 static unsigned long long cnt_free = 0;
-
-static Block* ctx_buf_reserve(size_t cap);
 
 #define AS_SLICE(x) (Slice) _Generic((x),                         \
 	BigInt:      (Slice){ .data = (x)->data, .size = (x)->size }, \
 	ConstBigInt: (Slice){ .data = (x)->data, .size = (x)->size })
 
 void bigint_init(void) {
-	ctx.buf = NULL;
-	ctx.bufsize = 0;
 	arena = arena_create(GiB(1), sizeof(mem_arena));
 	int i = arena->pos;
-	printf("%d\n", i);
 
 	INITIAL_NEWTON_PRECISION = log2(17);
 	NEWTON_STEPS = 0;
@@ -63,26 +56,10 @@ void bigint_init(void) {
 }
 
 void bigint_finish(void) {
-	free(ctx.buf);
-	ctx.buf = NULL;
-	ctx.bufsize = 0;
-}
-
-static size_t cnt_ctx_buf_realloc = 0;
-
-static Block* ctx_buf_reserve(size_t cap) {
-	if(ctx.bufsize < cap) {
-		free(ctx.buf);
-		ctx.buf = malloc(cap * sizeof(Block));
-		if (!ctx.buf) {
-			ELOG_CODE(errno);
-			ELOG("Parameters: cap = %zu\n", cap);
-			return NULL;
-		}
-		cnt_ctx_buf_realloc++;
-		ctx.bufsize = cap;
+	if (arena->pos != ARENA_BASE_POS) {
+		printf("WARNING: Arena hasn't been fully cleared (pos = %zu)\n", arena->pos);
 	}
-	return ctx.buf;
+	arena_destroy(arena);
 }
 
 BigInt bigint_alloc(size_t cap) {
@@ -201,7 +178,6 @@ void bigint_memstat(void) {
 	printf("Alloc: %llu\n", cnt_alloc);
 	printf("Realloc: %llu\n", cnt_realloc);
 	printf("Free: %llu\n", cnt_free);
-	printf("Buffer reallocations: %llu\n", cnt_ctx_buf_realloc);
 }
 
 size_t bigint_size(ConstBigInt z) {
@@ -764,7 +740,7 @@ FormatSpec bigint_initBIFS(void) {
 	return (FormatSpec) { 0 };
 }
 
-int _bigint_fprintf(FILE* file, const char* const format, va_list args) {
+static int _bigint_fprintf(FILE* file, const char* const format, va_list args) {
 	char c = *format;
 	int i = 0;
 	FormatSpec bifs = bigint_initBIFS();
@@ -935,9 +911,11 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 	const bool add_sign = add_minus_sign || bifs.add_plus_sign;
 
 	const size_t max_digits =
-		(z->size > 0) ? z->size * MAX_DEC_DIGITS_PER_BLOCK : 1;
+		(z->size > 0) ? bigint_decimal_width(z) : 1;
 	const size_t max_spaces = (max_digits / DEC_DIGITS_PER_SPACE) * bifs.add_spaces;
-	char* const str = malloc(max_digits + max_spaces + add_sign + 1);
+	const size_t max_len = max_digits + max_spaces + add_sign;
+	char* const str = malloc(max_len + 1);
+
 	if (!str) return NULL;
 
 	size_t offset = 0;
@@ -954,54 +932,29 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 		return str;
 	}
 
-	char* const digits = str + offset;
-	size_t cnt = 0;
+	char* digits = str + offset;
 
-	Slice Z = { z->data, z->size };
+	size_t len = double_dabble(AS_SLICE(z), digits);
 
-	const size_t q_cap = z->size;
-	const size_t tmp_cap = z->size;
+	// 1234567890123
+	// 1    234567890123
+	// 1 234   567890123
+	// 1 234 567  890123
+	// 1 234 567 890 123
 
-	u64 restore_pos = arena->pos;
-	Block* const q_data = PUSH_ARRAY(arena, Block, q_cap);
-	Block* const tmp_data = PUSH_ARRAY(arena, Block, tmp_cap);
-	Slice tmp = {
-		.data = tmp_data,
-		.size = copy(Z, tmp_data)
-	};
-
-	USmallInt rem;
-	size_t rem_size;
-
-	while (tmp.size > 0) {
-		tmp.size = long_div(tmp, TEN, q_data, tmp_data, &rem_size);
-		assert((rem_size == 1 && tmp_data[0] < 10) || rem_size == 0);
-		rem = rem_size ? tmp_data[0] : 0;
-		assert(cnt < max_digits + max_spaces || ({
-					printf("%*s\n", (int)cnt, digits);
-					0;
-				}));
-		digits[cnt++] = rem + '0';
-		if (bifs.add_spaces &&
-				(cnt + 1) % (DEC_DIGITS_PER_SPACE + 1) == 0) {
-			assert(cnt < max_digits + max_spaces || ({
-						printf("%*s\n", (int)cnt, digits);
-						0;
-					}));
-			digits[cnt++] = ' ';
+	if (bifs.add_spaces) {
+		size_t spaces = len / DDPS;
+		size_t space1 = ((len - 1) % DDPS) + 1;
+		digits += space1;
+		len -= space1;
+		memmove(digits + spaces, digits, sizeof(char) * len);
+		digits[0] = ' ';
+		for (size_t i = 0; i < spaces - 1; i++) {
+			memmove(digits + 1 + i * (DDPS + 1), digits + spaces + i * DDPS, sizeof(char) * DDPS);
+			digits[(i + 1) * (DDPS + 1)] = ' ';
 		}
-		memcpy(tmp_data, q_data, tmp.size * sizeof(Block));
+		digits[spaces * (DDPS + 1)] = '\0';
 	}
-	if (digits[cnt - 1] == ' ') cnt--;
-
-	for (size_t i = 0; i < cnt / 2; i++) {
-		char tmp = digits[i];
-		digits[i] = digits[cnt - i - 1];
-		digits[cnt - i - 1] = tmp;
-	}
-	digits[cnt] = '\0';
-
-	arena_pop_to(arena, restore_pos);
 	return str;
 }
 
@@ -1125,79 +1078,6 @@ BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr) {
 	return out;
 }
 
-/*
-bool set_newton_precision(size_t p) {
-	NEWTON_STEPS = ceil( log2( (p + 1) / log2(17) ) );
-
-//	if (p > NEWTON_PRECISION) {
-//		const size_t blocks = (p - 1) / BLOCK_WIDTH + 1;
-//
-//		size_t dp = p - NEWTON_PRECISION;
-//		size_t dp_blocks = dp / BLOCK_WIDTH;
-//		size_t dp_bits = dp % BLOCK_WIDTH;
-//		size_t rem_cap = (dp + _17_WIDTH - 1) / BLOCK_WIDTH + 1;
-//
-//		Block* tmp;
-//		if (_48_OVER_17_CAP < blocks) {
-//			tmp = realloc(MUT_DATA(_48_OVER_17), sizeof(Block) * blocks);
-//			if (!tmp) return false;
-//			_48_OVER_17.data = tmp;
-//			_48_OVER_17_CAP = blocks;
-//		}
-//		if (_32_OVER_17_CAP < blocks) {
-//			tmp = realloc(MUT_DATA(_32_OVER_17), sizeof(Block) * blocks);
-//			if (!tmp) return false;
-//			_32_OVER_17.data = tmp;
-//			_32_OVER_17_CAP = blocks;
-//		}
-//
-//		if (_48_OVER_17_REM_CAP < rem_cap) {
-//			tmp = realloc(MUT_DATA(_48_OVER_17_REM), sizeof(Block) * rem_cap);
-//			if (!tmp) return false;
-//			_48_OVER_17_REM.data = tmp;
-//			_48_OVER_17_REM_CAP = rem_cap;
-//		}
-//		if (_32_OVER_17_REM_CAP < rem_cap) {
-//			tmp = realloc(MUT_DATA(_32_OVER_17_REM), sizeof(Block) * rem_cap);
-//			if (!tmp) return false;
-//			_32_OVER_17_REM.data = tmp;
-//			_32_OVER_17_REM_CAP = rem_cap;
-//		}
-//
-//		_48_OVER_17.size = lshift(_48_OVER_17, dp, MUT_DATA(_48_OVER_17));
-//		Block _4817_mid_block = _48_OVER_17.data[dp_blocks];
-//		_32_OVER_17.size = lshift(_32_OVER_17, dp, MUT_DATA(_32_OVER_17));
-//		Block _3217_mid_block = _32_OVER_17.data[dp_blocks];
-//
-//		Block* div_buf = ctx_buf_reserve(2);
-//
-//		_48_OVER_17_REM.size = lshift(_48_OVER_17_REM, dp, MUT_DATA(_48_OVER_17_REM));
-//		long_div(_48_OVER_17_REM, _17_CONST,
-//				(Block*)_48_OVER_17.data, (Block*)_48_OVER_17_REM.data, &_48_OVER_17_REM.size, div_buf);
-//		MUT_DATA(_48_OVER_17)[dp_blocks] |= _4817_mid_block;
-//		_48_OVER_17_POINT += dp;
-//
-//		_32_OVER_17_REM.size = lshift(_32_OVER_17_REM, dp, MUT_DATA(_32_OVER_17_REM));
-//		long_div(_32_OVER_17_REM, _17_CONST,
-//				(Block*)_32_OVER_17.data, (Block*)_32_OVER_17_REM.data, &_32_OVER_17_REM.size, div_buf);
-//		MUT_DATA(_32_OVER_17)[dp_blocks] |= _3217_mid_block;
-//		_32_OVER_17_POINT += dp;
-//
-//		// print_slice_bin_point(_48_OVER_17, _48_OVER_17_POINT);
-//		// printf(":");
-//		// print_slice(_48_OVER_17_REM);
-//		// printf("\n");
-//		// print_slice_bin_point(_32_OVER_17, _32_OVER_17_POINT);
-//		// printf(":");
-//		// print_slice(_32_OVER_17_REM);
-//		// printf("\n");
-//	}
-
-	NEWTON_PRECISION = p;
-	return true;
-}
-*/
-
 BigInt bigint_urecpr(ConstBigInt d, size_t precision, BigInt* out_ptr) {
 	assert(d);
 	assert(out_ptr);
@@ -1257,5 +1137,9 @@ BigInt bigint_div_recpr(ConstBigInt num, ConstBigInt denum, ConstBigInt recpr, s
 	out->sign = quo_sign;
 	(*rem)->sign = rem_sign;
 	return out;
+}
+
+size_t bigint_decimal_width(ConstBigInt num) {
+	return decimal_width(bigint_width(num));
 }
 

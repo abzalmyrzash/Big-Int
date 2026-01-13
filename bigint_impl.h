@@ -24,6 +24,12 @@
 	Slice: (Block*)(x).data, \
 	default: assert(0 && "MUT_DATA: invalid argument!\n"))
 
+#define OUT(x) _Generic((x), \
+	Slice: (OutSlice) { .data = (Block*)((x).data), .size = &((x).data) })
+
+#define IN(x) _Generic((x), \
+	OutSlice: (Slice) { .data = (x).data, .size = *((x).data) })
+
 typedef struct {
 	Block* buf;
 	size_t bufsize;
@@ -33,9 +39,10 @@ thread_local mem_arena* arena;
 
 static constexpr Block VALUE_TEN = 10;
 static const Slice TEN = {
-	.data = (Block*)&VALUE_TEN,
+	.data = &VALUE_TEN,
 	.size = 1
 };
+#define TEN_WIDTH 4
 
 static constexpr Block VALUE_ONE = 1;
 static const Slice ONE = {
@@ -57,6 +64,7 @@ constexpr uint8_t DATA_OFFSET = offsetof(struct bigint, data); // offset of data
 #define HEX_DIGITS_PER_BLOCK (sizeof(Block) * 2)
 #define MAX_DEC_DIGITS_PER_BLOCK MAX_DEC_INT_DIGITS(Block)
 #define DEC_DIGITS_PER_SPACE 3
+#define DDPS DEC_DIGITS_PER_SPACE
 
 constexpr int HEX_PREFIX_LEN = sizeof(HEX_PREFIX) - 1;
 
@@ -261,7 +269,7 @@ static Slice split(Slice* slice, size_t size) {
 	Slice second;
 	if (slice->size > size) {
 		second.data = slice->data + size;
-		second.size = size_without_zeros(second.data, slice->size - size);
+		second.size = slice->size - size;
 		slice->size = size_without_zeros(slice->data, size);
 	} else {
 		second.data = NULL;
@@ -547,8 +555,8 @@ static int cnt_karatsuba = 0;
 static int cnt_longmul = 0;
 
 static size_t mul(Slice a, Slice b, Block* out) {
-	const size_t n = a.size > b.size ? a.size : b.size;
-	const size_t m = a.size < b.size ? a.size : b.size;
+	const size_t n = MAX(a.size, b.size);
+	const size_t m = MIN(a.size, b.size);
 	size_t x;
 	if (n >= BIGINT_KARATSUBA_THRESHOLD
 			// standard algorithm is O(n * m)
@@ -568,22 +576,25 @@ static size_t mul(Slice a, Slice b, Block* out) {
 
 // Karatsuba multiplication
 // @params:
-// b - first number (or slice of a number);
-// d - second number (or slice);
-// n - max(b.size, d.size);
-// out - filled with b * d, must be allocated outside
-//       (at least (b.size + d.size) * sizeof(Block) bytes);
-// buffer - memory for storing intermediate calculations
-//          (karatsuba_buffer_size() * sizeof(Block) bytes)
+// b - first number x
+// d - second number y
+// n - max(x.size, y.size);
+// out - filled with x * y, must be allocated outside
+//       (at least (x.size + y.size) * sizeof(Block) bytes);
 // @return size of out
 //
-// Note: a slightly modified formula -
-// (a-b)(d-c)+ac+bd is used for the middle part
-// because (a+b) and (c+d) can overflow
+// It works by splitting x into (a <<< m) + b, and y into (c <<< m) + d, where m is n/2 rounded up
+// (note that b and d become different than x and y, though x and y were passed as b and d)
+// then multiply [(a <<< m) + b] * [(c <<< m) + d] using formula:
+// [a <<< (2 * m)] + {[(a - b)(d - c) + ac + bd] <<< m} + bd
+//
+// Note: (a - b)(d - c) + ac + bd is used for the middle part instead of
+// the more classic (a + b)(c + d) - ac - bd
+// because (a + b) and (c + d) can overflow
 static size_t karatsuba(Slice b, Slice d, size_t n, Block* out) {
 
 	if(b.size == 0 || d.size == 0) return 0;
-	assert(n == (b.size > d.size ? b.size : d.size));
+	assert(n == MAX(b.size, d.size));
 
 	if (n == 1) {
 		Block high = 0;
@@ -597,75 +608,80 @@ static size_t karatsuba(Slice b, Slice d, size_t n, Block* out) {
 		}
 	}
 
+	// m = (n + 1) / 2, or in other words, n/2 rounded up
 	const size_t m = (n + 1) / 2;
-	assert(m);
-	assert(m <= n);
+	// b is split into a and b, where a is the high part, and b is the low part
 	const Slice a = split(&b, m);
+	// d is split into c and d, similarly
 	const Slice c = split(&d, m);
-
-	Block* const abcd_data = out;
+	// the lower part's size will always be >= higher part's, but roughly even
 
 	bool ab_sign;
 	bool dc_sign;
 	bool abcd_sign;
+
+	// abcd will be used to store (a - b) * (d - c),
+	// then add (a * c) and (a * c) <<< m
+	// then add (b * d)
+	// shift the whole thing by m blocks,
+	// and finally add (b * d) again
+	Slice abcd      = { .data = out };
 	
 	u64 restore_pos = arena->pos;
-	Block* const ab_data = PUSH_ARRAY(arena, Block, m);
-	const Slice a_minus_b = {
-		.data = ab_data,
-		.size = sub(a, b, ab_data, &ab_sign)
-	};
+	// max cap for buffer is 2 * m blocks, as evidenced below
+	Block* const buffer = PUSH_ARRAY(arena, Block, 2 * m);
+
+	// first we use buffer to store (a - b) and (d - c)
+	Slice a_minus_b = { .data = buffer };     // max cap = m, since both a and b's sizes are <= m
+	Slice d_minus_c = { .data = buffer + m }; // max cap = m, since both d and c's sizes are <= m
+	// (a - b) and (d - c) together use 2 * m
+
+	// after multiplying them (storing the result in abcd),
+	// the buffer will be free to be used by (a * c)
+	Slice a_times_c = { .data = buffer };     // max cap = 2 * (n - m), since a.size and c.size are <= (n - m)
+											  // and multiplying a and c requires a.size + c.size
+											  // NOTE: (n - m) <= m, since m = (n + 1) / 2
+
+	// after we're done using (a * c),
+	// the buffer will be free to be used by (b * d)
+	Slice b_times_d = { .data = buffer };     // max cap = 2 * m, since b.size and d.size are <= m
+
+	// as we can see, we only ever use 2 * m blocks for buffer (for one call of this function)
+
+	a_minus_b.size = sub(a, b, MUT_DATA(a_minus_b), &ab_sign);
 	assert(a_minus_b.size <= m);
 	assert(a_minus_b.size == size_without_zeros(a_minus_b.data, a_minus_b.size));
 
-	Block* const dc_data = PUSH_ARRAY(arena, Block, m);
-	const Slice d_minus_c = {
-		.data = dc_data,
-		.size = sub(d, c, dc_data, &dc_sign)
-	};
+	d_minus_c.size = sub(d, c, MUT_DATA(d_minus_c), &dc_sign);
 	assert(d_minus_c.size <= m);
 	assert(d_minus_c.size == size_without_zeros(d_minus_c.data, d_minus_c.size));
 
 	abcd_sign = ab_sign ^ dc_sign;
 
 	// abcd = (a-b)(d-c)
-	Slice abcd = {
-		.data = abcd_data,
-		.size = mul(a_minus_b, d_minus_c, abcd_data)
-	};
+	abcd.size = mul(a_minus_b, d_minus_c, MUT_DATA(abcd));
 	assert(abcd.size <= 2 * m);
 	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
-	arena_pop_to(arena, restore_pos);
 
-	Block* const ac_data = PUSH_ARRAY(arena, Block, 2 * m);
-	const Slice a_times_c = { 
-		.data = ac_data,
-		.size = mul(a, c, ac_data)
-	};
+	a_times_c.size = mul(a, c, MUT_DATA(a_times_c));
 	assert(a_times_c.size <= 2 * (n - m));
 	assert(a_times_c.size == size_without_zeros(a_times_c.data, a_times_c.size));
 
 	// abcd = abcd + ac
-	abcd.size = add_signed(abcd, abcd_sign, a_times_c, 0, abcd_data, &abcd_sign, true);
+	abcd.size = add_signed(abcd, abcd_sign, a_times_c, POSITIVE, MUT_DATA(abcd), &abcd_sign, true);
 	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
-	// abcd = (a_times_c << m) + abcd
-	abcd.size = add_sls_signed(a_times_c, m, 0, abcd, abcd_sign, abcd_data, &abcd_sign, true);
+	// abcd = (a_times_c <<< m) + abcd
+	abcd.size = add_sls_signed(a_times_c, m, POSITIVE, abcd, abcd_sign, MUT_DATA(abcd), &abcd_sign, true);
 	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
 
-	arena_pop_to(arena, restore_pos);
-
-	Block* const bd_data = PUSH_ARRAY(arena, Block, 2 * m);
-	const Slice b_times_d = {
-		.data = bd_data,
-		.size = mul(b, d, bd_data)
-	};
+	b_times_d.size = mul(b, d, MUT_DATA(b_times_d));
 	assert(b_times_d.size <= 2 * m);
 	assert(b_times_d.size == size_without_zeros(b_times_d.data, b_times_d.size));
 
 	// abcd = abcd + bd
-	abcd.size = add_signed(abcd, abcd_sign, b_times_d, 0, abcd_data, &abcd_sign, true);
+	abcd.size = add_signed(abcd, abcd_sign, b_times_d, POSITIVE, MUT_DATA(abcd), &abcd_sign, true);
 	assert(abcd.size == size_without_zeros(abcd.data, abcd.size));
-	// move abcd from out to out + m
+	// move abcd from out to out + m, basically leftshifting abcd <<< m
 	memmove(out + m, out, abcd.size * sizeof(Block));
 	abcd.data += m;
 	// (abcd << m) + bd
@@ -732,6 +748,37 @@ static size_t lshift(Slice z, size_t shift, Block* out) {
 	}
 
 	memset(out, 0, shift_blocks * sizeof(Block));
+	return out_size;
+}
+
+static size_t lshift_1(Slice z, Block* out) {
+	if (z.size == 0) return 0;
+
+	const Block LOW_BITS = (1ULL << (BLOCK_WIDTH - 1)) - 1;
+	const Block HIGH_BITS = ~0ULL - LOW_BITS;
+
+	size_t out_size = z.size;
+
+	size_t i = z.size - 1;
+	Block hi, lo;
+
+	hi = z.data[i] & HIGH_BITS;
+	lo = z.data[i] & LOW_BITS;
+	if (hi) {
+		out_size++;
+		out[i + 1] = hi >> (BLOCK_WIDTH - 1);
+	}
+	out[i] = lo << 1;
+
+	if (i--) while (1) {
+		hi = z.data[i] & HIGH_BITS;
+		lo = z.data[i] & LOW_BITS;
+		out[i] = lo << 1;
+		out[i + 1] |= hi >> (BLOCK_WIDTH - 1);
+		if (i == 0) break;
+		i--;
+	}
+
 	return out_size;
 }
 
@@ -1044,19 +1091,10 @@ static size_t newton_reciprocal(Slice d, size_t precision, Block* out) {
 
 	arena_pop_to(arena, restore_pos);
 
-	/*
-	print_slice_bin_point(x, x_point);
-	printf("\n");
-	*/
 	if (x_point > p_ceil) {
 		x.size = rshift(x, x_point - p_ceil, MUT_DATA(x));
 		x_point = p_ceil;
 	}
-
-	/*
-	print_slice_bin_point(x, x_point);
-	printf("\n");
-	*/
 
 	const size_t dx_cap  = x_cap + d.size;
 	const size_t xdx_cap = x_cap + dx_cap;
@@ -1071,131 +1109,39 @@ static size_t newton_reciprocal(Slice d, size_t precision, Block* out) {
 	while (p - 1 < precision) {
 		// precision is doubled every iteration
 		p *= 2;
-		// printf("p = %f\n", p - 1);
 		p_ceil = MIN(ceil(p), precision);
-		// printf("p = %f\n", p);
+
 		// x + x * (1 - d * x)
 		// d * x
 		dx.size = mul(d, x, MUT_DATA(dx));
 		size_t dx_point = d_point + x_point;
-		/*
-		printf("dx =           ");
-		print_slice_bin_point(dx, dx_point);
-		printf("(%zu)\n", dx_point);
-		*/
 
 		// shift 1 by d_point + x_point
 		size_t shf_blocks = dx_point / BLOCK_WIDTH;
 		size_t shf_bits = dx_point % BLOCK_WIDTH;
 		_1_data = 1ULL << shf_bits;
 
-		/*
-		printf("%zu\n", shf);
-		printf("_1 =           ");
-		print_slice_bin_point(_1, shf_bits);
-		printf("\n");
-		*/
-
 		// 1 - dx
 		dx.size = sub_sls(_1, shf_blocks, dx, MUT_DATA(dx), &dx_sign);
-		// printf("%s\n", dx_sign ? "-" : "+");
-
-		/*
-		printf("1 - dx =       ");
-		print_slice_bin_point(dx, dx_point);
-		printf("(%zu)\n", dx_point);
-		*/
 
 		// x * (1 - dx)
 		xdx.size = mul(x, dx, MUT_DATA(xdx));
 		size_t xdx_point = dx_point + x_point;
-		/*
-		printf("x * (1 - dx) = ");
-		print_slice_bin_point(xdx, xdx_point);
-		printf("(%zu)\n", xdx_point);
-		*/
+
+		// shift to p_ceil precision
 		if (xdx_point > p_ceil) {
 			xdx.size = rshift(xdx, xdx_point - p_ceil, MUT_DATA(xdx));
-			/*
-			printf("Rounded      = ");
-			print_slice_bin_point(xdx, p_ceil);
-			printf("(%zu)\n", p_ceil);
-			*/
 		}
-		// else printf("Unrounded\n");
 
 		if (x_point < p_ceil) {
 			x.size = lshift(x, p_ceil - x_point, MUT_DATA(x));
 			x_point = p_ceil;
 		}
 
-		/*
-		printf("x = ");
-		print_slice_bin_point(x, p_ceil);
-		printf("(%u)\n", p_ceil);
-		*/
+		// x + x * (1 - dx)
 		bool x_sign;
 		x.size = add_signed(x, POSITIVE, xdx, dx_sign, MUT_DATA(x), &x_sign, true);
-
-		/*
-		printf("x = ");
-		print_slice_bin_point(x, p_ceil);
-		printf("(%u)\n", );
-		*/
 	}
-
-	/*
-	print_slice(d);
-	printf("\n");
-	print_slice(x);
-	printf("\n");
-	*/
-
-	/*
-	dx.size = mul(d, x, MUT_DATA(dx));
-	size_t dx_point = d_point + x_point;
-	
-	// shift 1 by d_point + x_point
-	size_t shf_blocks = dx_point / BLOCK_WIDTH;
-	size_t shf_bits = dx_point % BLOCK_WIDTH;
-	_1_data = 1ULL << shf_bits;
-	// print_slice_bin_point(_1, dx_point);
-	// printf("\n");
-
-	if (cmp_sls(_1, shf_blocks, dx) > 0) {
-		// print_slice_bin_point(x, x_point);
-		// printf("\n");
-		// print_slice_bin_point(dx, dx_point);
-		// printf("\n");
-
-		x.size = add(x, ONE, MUT_DATA(x), true);
-		dx.size = mul(d, x, MUT_DATA(dx));
-
-		// print_slice_bin_point(x, x_point);
-		// printf("\n");
-		// print_slice_bin_point(dx, dx_point);
-		// printf("\n");
-		// printf("\n");
-
-		if (cmp_sls(_1, shf_blocks, dx) > 0) {
-			print_slice(d);
-			printf("\n");
-			print_slice(x);
-			printf("\n");
-			assert(0);
-		}
-	}
-	*/
-
-	/*
-	else {
-		printf("\n");
-		printf("\n");
-		print_slice_bin_point(dx, dx_point);
-		printf("\n");
-		printf("\n");
-	}
-	*/
 
 	arena_pop_to(arena, restore_pos);
 	return x.size;
@@ -1206,7 +1152,7 @@ static size_t div_recpr_cap(size_t num_size, size_t denum_size, size_t recpr_siz
 	const size_t denum_width = denum_size * BLOCK_WIDTH;
 	const size_t quo_cap = num_size + recpr_size;
 	const size_t shf = precision + denum_width;
-	const size_t shf_quo_cap = quo_cap - shf / BLOCK_WIDTH;
+	const size_t shf_quo_cap = quo_cap - shf / BLOCK_WIDTH + 1;
 	const size_t dq_cap = denum_size + shf_quo_cap;
 	*rem_cap = MAX(num_size, dq_cap);
 	return quo_cap;
@@ -1221,6 +1167,8 @@ static size_t div_recpr(Slice num, Slice denum, Slice recpr, size_t precision, B
 	const size_t shf_quo_cap = quo_cap - shf / BLOCK_WIDTH;
 	const size_t dq_cap = denum.size + shf_quo_cap;
 	const size_t rem_cap = MAX(num.size, dq_cap);
+
+	u64 restore_pos = arena->pos;
 
 	Slice quo = { .data = quo_data };
 	quo.size = mul(num, recpr, quo_data);
@@ -1262,6 +1210,8 @@ static size_t div_recpr(Slice num, Slice denum, Slice recpr, size_t precision, B
 	assert(rem_sign == POSITIVE);
 	assert(cmp(rem, denum) < 0);
 
+	arena_pop_to(arena, restore_pos);
+
 	*rem_size = rem.size;
 	return quo.size;
 }
@@ -1286,13 +1236,12 @@ static size_t powmod(Slice a, Slice pow, Slice mod, Block* out_data) {
 			// tmp = out * out
 			tmp.size = mul(out, out, MUT_DATA(tmp));
 			// out = tmp % mod
-			long_div(tmp, mod, NULL, MUT_DATA(tmp), &out.size);
-			memcpy(out_data, MUT_DATA(tmp), sizeof(Block) * out.size);
+			long_div(tmp, mod, NULL, MUT_DATA(out), &out.size);
 			if (pow_block & ((Block)1 << j)) {
 				// tmp = a * out
 				tmp.size = mul(a, out, MUT_DATA(tmp));
 				// out = tmp % mod
-				long_div(tmp, mod, NULL, MUT_DATA(tmp), &out.size);
+				long_div(tmp, mod, NULL, MUT_DATA(out), &out.size);
 				memcpy(out_data, MUT_DATA(tmp), sizeof(Block) * out.size);
 			}
 		}
@@ -1302,17 +1251,13 @@ static size_t powmod(Slice a, Slice pow, Slice mod, Block* out_data) {
 	return out.size;
 }
 
-/*
-static size_t powmod_recpr(Slice a, Slice pow, Slice mod, Slice recpr, size_t precision, Block* out_data, Block* buffer) {
+static size_t powmod_recpr(Slice a, Slice pow, Slice mod, Slice recpr, size_t precision, Block* out_data) {
 	assert(cmp(a, mod) < 0);
 	assert(mod.size);
-	const size_t mul_cap = mod.size * 2;
-	const size_t div_cap = div_recpr_cap(2 * mod.size, mod.size, recpr.size, precision, );
-	Block* const mul_buf = buffer + mul_cap;
-	Block* const div_buf = buffer + mul_cap;
-	Block* const quo_buf = div_buf + div_cap;
+	u64 restore_pos = arena->pos;
+	Slice tmp = { .data = PUSH_ARRAY(arena, Block, pow.size * 2) };
+	Block* quo_tmp = PUSH_ARRAY(arena, Block, pow.size);
 	Slice out = { .data = out_data, .size = 1 };
-	Slice buf = { .data = buffer };
 	out_data[0] = 1;
 
 	for (size_t i = pow.size; i > 0; i--) {
@@ -1320,20 +1265,183 @@ static size_t powmod_recpr(Slice a, Slice pow, Slice mod, Slice recpr, size_t pr
 		const int bits = (i == pow.size) ?
 			BLOCK_WIDTH - CLZ(pow_block) : BLOCK_WIDTH;
 		for (int j = bits - 1; j >= 0; j--) {
-			// buffer = out * out
-			buf.size = mul(out, out, buffer, mul_buf);
-			// out = buffer % mod
-			div_recpr(buf, mod, recpr, precision, NULL, buffer, &out.size, div_buf);
-			memcpy(out_data, buffer, sizeof(Block) * out.size);
+			// tmp = out * out
+			tmp.size = mul(out, out, MUT_DATA(tmp));
+			// out = tmp % mod
+			div_recpr(tmp, mod, recpr, precision, quo_tmp, MUT_DATA(out), &out.size);
 			if (pow_block & ((Block)1 << j)) {
-				// buffer = a * out
-				buf.size = mul(a, out, buffer, buffer + mul_cap);
-				// out = buffer % mod
-				div_recpr(buf, mod, recpr, precision, NULL, buffer, &out.size, div_buf);
-				memcpy(out_data, buffer, sizeof(Block) * out.size);
+				// tmp = a * out
+				tmp.size = mul(a, out, MUT_DATA(tmp));
+				// out = tmp % mod
+				div_recpr(tmp, mod, recpr, precision, quo_tmp, MUT_DATA(out), &out.size);
 			}
 		}
 	}
+	arena_pop_to(arena, restore_pos);
+	return out.size;
 }
+
+/*
+0000 0000 1011
+0000 0001 0110
+0000 0010 1100
+0000 0101 1000
+0000 1000 1000
+0001 0001 0000
 */
+
+#define GET_BIT(x, bit) (x)[(bit) / BLOCK_WIDTH] & (1ULL << ((bit) % BLOCK_WIDTH))
+#define SET_BIT(x, bit) ((Block*)(x))[(bit) / BLOCK_WIDTH] |= (1ULL << ((bit) % BLOCK_WIDTH))
+#define ASSIGN_BIT(x, bit, val) ((Block*)(x))[(bit) / BLOCK_WIDTH] |= ((Block)(bool)(val) << ((bit) % BLOCK_WIDTH))
+
+static size_t decimal_width(size_t bit_width) {
+	return ceil(bit_width * (LOG10_2 + 1e-6));
+}
+
+static size_t divmod10(Slice x, char* str) {
+	if (x.size == 0) {
+		str[0] = '0';
+		str[1] = '\0';
+		return 1;
+	}
+
+	const size_t q_cap = x.size;
+	const size_t tmp_cap = x.size;
+
+	u64 restore_pos = arena->pos;
+	Block* const q_data = PUSH_ARRAY(arena, Block, q_cap);
+	Block* const tmp_data = PUSH_ARRAY(arena, Block, tmp_cap);
+	Slice tmp = {
+		.data = tmp_data,
+		.size = copy(x, tmp_data)
+	};
+
+	USmallInt rem;
+	size_t rem_size;
+
+	size_t cnt = 0;
+	while (tmp.size > 0) {
+		tmp.size = long_div(tmp, TEN, q_data, tmp_data, &rem_size);
+		assert((rem_size == 1 && tmp_data[0] < 10) || rem_size == 0);
+		rem = rem_size ? tmp_data[0] : 0;
+		str[cnt++] = rem + '0';
+		memcpy(tmp_data, q_data, tmp.size * sizeof(Block));
+	}
+
+	for (size_t i = 0; i < cnt / 2; i++) {
+		char tmp = str[i];
+		str[i] = str[cnt - i - 1];
+		str[cnt - i - 1] = tmp;
+	}
+	str[cnt] = '\0';
+
+	arena_pop_to(arena, restore_pos);
+	return cnt;
+}
+
+static size_t divmod10_recpr(Slice x, char* str) {
+	if (x.size == 0) {
+		str[0] = '0';
+		str[1] = '\0';
+		return 1;
+	}
+	u64 restore_pos = arena->pos;
+
+	size_t precision = MAX(width(x), TEN_WIDTH);
+	size_t new_p;
+	size_t recpr_cap = newton_reciprocal_cap(precision);
+
+	Slice recpr = { .data = PUSH_ARRAY(arena, Block, recpr_cap) };
+	recpr.size = newton_reciprocal(TEN, precision, MUT_DATA(recpr));
+
+	size_t quo_cap = x.size;
+	size_t num_cap = x.size;
+	size_t rem_cap;
+
+	quo_cap = div_recpr_cap(x.size, TEN.size, recpr.size, precision, &rem_cap);
+
+	Block* const quo_data = PUSH_ARRAY(arena, Block, quo_cap);
+	Block* const num_data = PUSH_ARRAY(arena, Block, num_cap);
+	Slice num = {
+		.data = num_data,
+		.size = copy(x, num_data)
+	};
+
+	Block* rem_data = PUSH_ARRAY(arena, Block, rem_cap);
+	size_t rem_size;
+
+	size_t cnt = 0;
+	while (num.size > 0) {
+		num.size = div_recpr(num, TEN, recpr, precision, quo_data, rem_data, &rem_size);
+		assert((rem_size == 1 && rem_data[0] < 10) || rem_size == 0);
+		Block rem = rem_size ? rem_data[0] : 0;
+		str[cnt++] = rem + '0';
+		memcpy(num_data, quo_data, num.size * sizeof(Block));
+		new_p = MAX(width(num), TEN_WIDTH);
+		assert(new_p <= precision);
+		recpr.size = rshift(recpr, precision - new_p, MUT_DATA(recpr));
+		precision = new_p;
+	}
+
+	for (size_t i = 0; i < cnt / 2; i++) {
+		char tmp = str[i];
+		str[i] = str[cnt - i - 1];
+		str[cnt - i - 1] = tmp;
+	}
+	str[cnt] = '\0';
+
+	arena_pop_to(arena, restore_pos);
+	return cnt;
+}
+
+static size_t double_dabble(Slice x, char* str) {
+	if (x.size == 0) {
+		str[0] = '0';
+		str[1] = '\0';
+		return 1;
+	}
+
+	u64 restore_pos = arena->pos;
+
+	const size_t n = width(x);
+	const size_t buf_max_width = 4 * decimal_width(n);
+	const size_t buf_max_size = ceil_div(buf_max_width, BLOCK_WIDTH);
+	Slice buf = { .data = PUSH_ARRAY_ZERO(arena, Block, buf_max_size) };
+	MUT(buf.data)[0] = 1;
+	size_t width = 1;
+	buf.size = 1;
+	size_t bcd_cnt = 1;
+	constexpr size_t BCD_PER_BLOCK = BLOCK_WIDTH / 4;
+	Block mask = 15;
+
+	for (size_t i = 2; i <= n; i++) {
+		for (size_t j = 0; j < buf.size; j++) {
+			int shift = 0;
+			for (int k = 0; k < BCD_PER_BLOCK; k++) {
+				Block bcd = (buf.data[j] & (mask << shift)) >> shift;
+				if (bcd >= 5) {
+					MUT(buf.data)[j] += 3ULL << shift;
+				}
+				shift += 4;
+			}
+		}
+		size_t old_size = buf.size;
+		buf.size = lshift_1(buf, MUT_DATA(buf));
+		if (CLZ(buf.data[buf.size - 1]) % 4 == 3) {
+			bcd_cnt++;
+		}
+		ASSIGN_BIT(buf.data, 0, GET_BIT(x.data, n - i));
+	}
+
+	str[bcd_cnt] = '\0';
+	int shift = 0;
+	for (size_t i = 0; i < bcd_cnt; i++) {
+		str[bcd_cnt - i - 1] = '0' + ((buf.data[i / BCD_PER_BLOCK] & (mask << shift)) >> shift);
+		shift += 4;
+		shift %= BLOCK_WIDTH;
+	}
+
+	arena_pop_to(arena, restore_pos);
+	return bcd_cnt;
+}
 

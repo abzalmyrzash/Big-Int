@@ -5,36 +5,18 @@
 #include "utils.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
+#include <string.h>
 #include <time.h>
 
 int run(BigInt (*f)(unsigned int, BigInt*));
 
 int main()
 {
-	/*
-	run(bigFib);
-	return 0;
-	bigint_init();
-	BigInt A = NULL;
-	BigInt B = NULL;
-	bigint_rand(&A, 10'000);
-	bigint_rand(&B, 10'000);
-	printf("%zu %zu\n", bigint_size(A), bigint_size(B));
-	BigInt C = bigint_alloc(bigint_size(A) + bigint_size(B));
-	bigint_memstat();
-	clock_t start = clock();
-	for (int i = 0; i < 10000; i++) {
-		bigint_mul(A, B, &C);
-	}
-	float time = (float)(clock() - start) / CLOCKS_PER_SEC;
-	printf("Time: %f seconds\n", time);
-	bigint_free(A);
-	bigint_free(B);
-	bigint_free(C);
-	bigint_memstat();
-	return 0;
-	*/
+	clock_t start;
+	float elapsed_time;
+	size_t size;
 
 	bigint_init();
 
@@ -45,21 +27,88 @@ int main()
 	BigInt rem = NULL;
 	BigInt recpr = NULL;
 
+	/*
+	for (int i = 0; i < 1000000; i++) {
+		size_t a_width = rand();
+		size_t b_width = rand();
+		bigint_rand(&A, a_width);
+		bigint_rand(&B, b_width);
+		// printf("%zu %zu\n", bigint_size(A), bigint_size(B));
+		start = clock();
+		bigint_mul(A, B, &C);
+		elapsed_time = (float)(clock() - start) / CLOCKS_PER_SEC;
+		// printf("Time: %f seconds\n", elapsed_time);
+	}
+	bigint_free(A);
+	bigint_free(B);
+	bigint_free(C);
+	bigint_memstat();
+	return 0;
+	*/
+
+	BigInt num = NULL;
+
+	/*
+	FILE* file = fopen("dec.txt", "r");
+	char str[100000];
+	fscanf(file, "%s", str);
+	start = clock();
+	bigint_scan(str, &num);
+	elapsed_time = (float)(clock() - start) / CLOCKS_PER_SEC;
+	fclose(file);
+	printf("Time: %.3f s\n", elapsed_time);
+
+	start = clock();
+	bigint_printf("%d\n", num);
+	elapsed_time = (float)(clock() - start) / CLOCKS_PER_SEC;
+	printf("Time: %.3f s\n", elapsed_time);
+	*/
+
+	size_t max_width = 100'000;
+	// scanf("%zu", &max_width);
+	bigint_rand(&num, max_width);
+
+	FILE* file = fopen("dec_spaces.txt", "w");
+	start = clock();
+	bigint_fprintf(file, "%_d\n", num);
+	elapsed_time = (float)(clock() - start) / CLOCKS_PER_SEC;
+	fclose(file);
+	printf("Time: %.3f s\n", elapsed_time);
+	bigint_finish();
+
+	return 0;
+
+	scanf("%zu", &size);
+	size_t precision = size * BIGINT_BLOCK_WIDTH;
+	bigint_rand(&A, precision);
+	bigint_rand(&B, precision);
+
+	start = clock();
+	bigint_mul(A, B, &res);
+	elapsed_time = (float)(clock() - start) / CLOCKS_PER_SEC;
+	printf("Time: %.3f s\n", elapsed_time);
+	printf("Size: %zu\n", bigint_size(res));
+	return 0;
+
+	/*
 	constexpr int buffer_size = 102400;
 	char buffer[buffer_size];
 
 	printf("Enter a: ");
 	fgets(buffer, buffer_size, stdin);
 	bigint_scan(buffer, &A);
-	bigint_printf("%p0_x\n", A);
-	// bigint_printf("%0_d\n", A);
-	printf("Size: %zu\n", bigint_size(A));
 
 	printf("Enter b: ");
 	fgets(buffer, buffer_size, stdin);
 	bigint_scan(buffer, &B);
-	bigint_printf("%p0_x\n", B, B);
-	// bigint_printf("%0_d\n", B, B);
+	*/
+
+
+	bigint_printf("%p0_x\n", A);
+	bigint_printf("%p0_x\n", B);
+	bigint_printf("%0_d\n", A);
+	printf("Size: %zu\n", bigint_size(A));
+	bigint_printf("%0_d\n", B, B);
 	printf("Size: %zu\n", bigint_size(B));
 
 	res = bigint_alloc(bigint_size(A) + bigint_size(B));
@@ -98,7 +147,6 @@ int main()
 
 	assert(bigint_cmp(res, A) == 0);
 
-	size_t precision = MAX(bigint_width(A), bigint_width(B));
 	bigint_recpr(B, precision, &recpr);
 	bigint_printf("1 / B = ");
 	bigint_printf("%px\n", recpr);
@@ -110,13 +158,13 @@ int main()
 	bigint_free(B);
 	bigint_free(res);
 	bigint_free(rem);
+	bigint_free(recpr);
 	bigint_memstat();
 	bigint_finish();
 	return 0;
 }
 
 int run(BigInt (*f)(unsigned int, BigInt*)) {
-	bigint_init();
 	BigInt res = NULL;
 	while(1) {
 		int n;
@@ -156,6 +204,5 @@ int run(BigInt (*f)(unsigned int, BigInt*)) {
 	}
 	bigint_free(res);
 	bigint_memstat();
-	bigint_finish();
 	return 0;
 }

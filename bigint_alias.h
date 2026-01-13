@@ -6,6 +6,7 @@ typedef BigInt_Block      Block;
 typedef BigInt_CapField   CapField;
 typedef BigInt_FormatSpec FormatSpec;
 typedef BigInt_Slice      Slice;
+typedef BigInt_OutSlice   OutSlice;
 
 #define BLOCK_WIDTH BIGINT_BLOCK_WIDTH
 #define CAP_WIDTH   BIGINT_CAP_WIDTH

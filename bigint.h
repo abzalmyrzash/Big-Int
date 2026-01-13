@@ -11,8 +11,6 @@ extern int bigint_errno;
 #define BIGINT_KEEP_DATA 1
 #define BIGINT_CLEAR_DATA 0
 
-typedef struct bigint_context* BigInt_Context;
-
 typedef struct bigint* BigInt;
 typedef const struct bigint* ConstBigInt;
 typedef struct {
@@ -119,3 +117,5 @@ BigInt bigint_recpr(ConstBigInt d, size_t precision, BigInt* out);
 // divide using reciprocal
 BigInt bigint_udiv_recpr(ConstBigInt n, ConstBigInt d, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem);
 BigInt bigint_div_recpr(ConstBigInt n, ConstBigInt d, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem);
+
+size_t bigint_decimal_width(ConstBigInt num);

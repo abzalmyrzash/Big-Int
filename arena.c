@@ -1,4 +1,6 @@
 #include "arena.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 mem_arena* arena_create(u64 reserve_size, u64 commit_size) {
@@ -29,7 +31,11 @@ void* arena_push(mem_arena* arena, u64 size, b32 zero) {
     u64 pos_aligned = ALIGN_UP_POW2(arena->pos, ARENA_ALIGN);
     u64 new_pos = pos_aligned + size;
 
-    if (new_pos > arena->reserve_size) { return NULL; }
+    if (new_pos > arena->reserve_size) { 
+		fprintf(stderr, "ERROR: out of memory in arena_push\n");
+		abort();
+		return NULL;
+	}
 
     if (new_pos > arena->commit_pos) {
         u64 new_commit_pos = new_pos;
@@ -41,6 +47,8 @@ void* arena_push(mem_arena* arena, u64 size, b32 zero) {
         u64 commit_size = new_commit_pos - arena->commit_pos;
 
         if (!plat_mem_commit(mem, commit_size)) {
+			fprintf(stderr, "ERROR: out of memory in arena_push\n");
+			abort();
             return NULL;
         }
 
@@ -74,6 +82,7 @@ void arena_clear(mem_arena* arena) {
 
 #if defined(_WIN32)
 
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 u32 plat_get_pagesize(void) {
@@ -104,6 +113,7 @@ b32 plat_mem_release(void* ptr, u64 size) {
 #elif defined(__linux__)
 
 #define _DEFAULT_SOURCE
+#define __USE_MISC
 
 #include <unistd.h>
 #include <sys/mman.h>
@@ -138,4 +148,3 @@ b32 plat_mem_release(void* ptr, u64 size) {
 }
 
 #endif
-

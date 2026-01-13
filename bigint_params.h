@@ -12,7 +12,7 @@
 // maximum capacity
 #define BIGINT_MAX_CAP     (uint64_t)~0ULL >> (64 - BIGINT_CAP_WIDTH)
 
-#define BIGINT_KARATSUBA_THRESHOLD 0
+#define BIGINT_KARATSUBA_THRESHOLD 9
 
 // pack the bigint struct
 // #define BIGINT_PACKED 
