@@ -2,4 +2,9 @@
 *.bat
 *.o
 *.d
+debug/*
+release/*
+debug-linux/*
+release-linux/*
+io/*.txt
 tags

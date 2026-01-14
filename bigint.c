@@ -57,7 +57,7 @@ void bigint_init(void) {
 
 void bigint_finish(void) {
 	if (arena->pos != ARENA_BASE_POS) {
-		printf("WARNING: Arena hasn't been fully cleared (pos = %zu)\n", arena->pos);
+		WLOG("WARNING: Arena hasn't been fully cleared (pos = %zu)\n", arena->pos);
 	}
 	arena_destroy(arena);
 }
@@ -689,19 +689,41 @@ BigInt bigint_rshift(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 	return out;
 }
 
-BigInt bigint_powmod(ConstBigInt a, ConstBigInt pow, ConstBigInt mod, BigInt* out_ptr) {
+BigInt bigint_pow(ConstBigInt a, size_t exp, BigInt* out_ptr) {
 	assert(a);
-	assert(pow);
+	assert(exp);
+	assert(out_ptr);
+	
+	BigInt out = bigint_reserve(out_ptr, to_blocks(exp * bigint_width(a)), CLEAR_DATA);
+	if (!out) return NULL;
+
+	out->size = power(AS_SLICE(a), exp, out->data);
+	return out;
+}
+
+BigInt bigint_powmod(ConstBigInt a, ConstBigInt exp, ConstBigInt mod, BigInt* out_ptr) {
+	assert(a);
+	assert(exp);
 	assert(mod);
 	assert(out_ptr);
 	
 	BigInt out = bigint_reserve(out_ptr, mod->size, CLEAR_DATA);
 	if (!out) return NULL;
 
-	Slice A = { a->data, a->size };
-	Slice Pow = { pow->data, pow->size };
-	Slice Mod = { mod->data, mod->size };
-	out->size = powmod(A, Pow, Mod, out->data);
+	out->size = powmod(AS_SLICE(a), AS_SLICE(exp), AS_SLICE(mod), out->data);
+	return out;
+}
+
+BigInt bigint_powmod_recpr(ConstBigInt a, ConstBigInt exp, ConstBigInt mod, ConstBigInt recpr, size_t precision, BigInt* out_ptr) {
+	assert(a);
+	assert(exp);
+	assert(mod);
+	assert(out_ptr);
+	
+	BigInt out = bigint_reserve(out_ptr, mod->size, CLEAR_DATA);
+	if (!out) return NULL;
+
+	out->size = powmod_recpr(AS_SLICE(a), AS_SLICE(exp), AS_SLICE(mod), AS_SLICE(recpr), precision, out->data);
 	return out;
 }
 
@@ -934,7 +956,8 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 
 	char* digits = str + offset;
 
-	size_t len = double_dabble(AS_SLICE(z), digits);
+	size_t len = decimal_split(AS_SLICE(z), digits);
+	digits[len] = '\0';
 
 	// 1234567890123
 	// 1    234567890123
@@ -1070,7 +1093,7 @@ BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr) {
 		out->size = add((Slice){out->data, out->size}, digit, out->data, true);
 		if (i == 0) break;
 		i--;
-		tmp.size = copy(pow10, tmp_data);
+		tmp.size = move(pow10, tmp_data);
 		pow10.size = mul(tmp, TEN, pow10_data);
 	}
 

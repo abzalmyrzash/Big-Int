@@ -26,27 +26,31 @@ int main()
 	BigInt res = NULL;
 	BigInt rem = NULL;
 	BigInt recpr = NULL;
+	BigInt num = NULL;
+
+	char* str;
+	constexpr int buffer_size = 102400;
+	char buffer[buffer_size];
+
+	FILE* out_file = stdout;
 
 	/*
-	for (int i = 0; i < 1000000; i++) {
-		size_t a_width = rand();
-		size_t b_width = rand();
-		bigint_rand(&A, a_width);
-		bigint_rand(&B, b_width);
-		// printf("%zu %zu\n", bigint_size(A), bigint_size(B));
-		start = clock();
-		bigint_mul(A, B, &C);
-		elapsed_time = (float)(clock() - start) / CLOCKS_PER_SEC;
-		// printf("Time: %f seconds\n", elapsed_time);
-	}
+	size_t a_width = 1'000'000;
+	size_t b_width = 1'000'000;
+	bigint_rand(&A, a_width);
+	bigint_rand(&B, b_width);
+	// printf("%zu %zu\n", bigint_size(A), bigint_size(B));
+	start = clock();
+	bigint_mul(A, B, &C);
+	elapsed_time = (float)(clock() - start) / CLOCKS_PER_SEC;
+	printf("Time: %f seconds\n", elapsed_time);
 	bigint_free(A);
 	bigint_free(B);
 	bigint_free(C);
 	bigint_memstat();
+	bigint_finish();
 	return 0;
 	*/
-
-	BigInt num = NULL;
 
 	/*
 	FILE* file = fopen("dec.txt", "r");
@@ -64,15 +68,17 @@ int main()
 	printf("Time: %.3f s\n", elapsed_time);
 	*/
 
+	// fgets(buffer, buffer_size, stdin);
+	// bigint_scan(buffer, &num);
 	size_t max_width = 100'000;
-	// scanf("%zu", &max_width);
+	scanf("%zu", &max_width);
 	bigint_rand(&num, max_width);
 
-	FILE* file = fopen("dec_spaces.txt", "w");
+	out_file = fopen("io/dec.txt", "w");
 	start = clock();
-	bigint_fprintf(file, "%_d\n", num);
+	bigint_fprintf(out_file, "%d\n", num);
 	elapsed_time = (float)(clock() - start) / CLOCKS_PER_SEC;
-	fclose(file);
+	fclose(out_file);
 	printf("Time: %.3f s\n", elapsed_time);
 	bigint_finish();
 
@@ -91,9 +97,6 @@ int main()
 	return 0;
 
 	/*
-	constexpr int buffer_size = 102400;
-	char buffer[buffer_size];
-
 	printf("Enter a: ");
 	fgets(buffer, buffer_size, stdin);
 	bigint_scan(buffer, &A);

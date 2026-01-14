@@ -84,6 +84,7 @@ constexpr int HEX_PREFIX_LEN = sizeof(HEX_PREFIX) - 1;
 	#define FORMAT_0HEX "%016" PRIX64
 	#define FORMAT_hex     "%" PRIx64
 	#define FORMAT_0hex "%016" PRIx64
+	#define FORMAT_DEC     "%" PRIu64
 
 #elif BIGINT_BLOCK_WIDTH == 32
 	#define ADDCARRY _addcarry_u32
@@ -93,6 +94,7 @@ constexpr int HEX_PREFIX_LEN = sizeof(HEX_PREFIX) - 1;
 	#define FORMAT_0HEX  "%08" PRIX32
 	#define FORMAT_hex     "%" PRIx32
 	#define FORMAT_0hex  "%08" PRIx32
+	#define FORMAT_DEC     "%" PRIu32
 
 #elif BIGINT_BLOCK_WIDTH == 16
 	#define ADDCARRY _addcarry_u16
@@ -102,6 +104,7 @@ constexpr int HEX_PREFIX_LEN = sizeof(HEX_PREFIX) - 1;
 	#define FORMAT_0HEX  "%04" PRIX16
 	#define FORMAT_hex     "%" PRIx16
 	#define FORMAT_0hex  "%04" PRIx16
+	#define FORMAT_DEC     "%" PRIu16
 
 #elif BIGINT_BLOCK_WIDTH == 8
 	#define ADDCARRY _addcarry_u8
@@ -111,6 +114,7 @@ constexpr int HEX_PREFIX_LEN = sizeof(HEX_PREFIX) - 1;
 	#define FORMAT_0HEX  "%02" PRIX8
 	#define FORMAT_hex     "%" PRIx8
 	#define FORMAT_0hex  "%02" PRIx8
+	#define FORMAT_DEC     "%" PRIu8
 #endif
 
 static inline USmallInt ABS(SmallInt v) {
@@ -263,6 +267,11 @@ static void print_slice_bin_point(Slice a, size_t point) {
 static inline size_t width(Slice a) {
 	if (a.size == 0) return 0;
 	return a.size * BLOCK_WIDTH - CLZ(a.data[a.size - 1]);
+}
+
+// size in blocks
+static inline size_t to_blocks(size_t width) {
+	return (width + BLOCK_WIDTH - 1) / BLOCK_WIDTH;
 }
 
 static Slice split(Slice* slice, size_t size) {
@@ -627,7 +636,7 @@ static size_t karatsuba(Slice b, Slice d, size_t n, Block* out) {
 	// and finally add (b * d) again
 	Slice abcd      = { .data = out };
 	
-	u64 restore_pos = arena->pos;
+	size_t restore_pos = arena->pos;
 	// max cap for buffer is 2 * m blocks, as evidenced below
 	Block* const buffer = PUSH_ARRAY(arena, Block, 2 * m);
 
@@ -690,10 +699,13 @@ static size_t karatsuba(Slice b, Slice d, size_t n, Block* out) {
 	return size;
 }
 
+static size_t move(Slice z, Block* out) {
+	memmove(out, z.data, z.size * sizeof(Block));
+	return z.size;
+}
+
 static size_t copy(Slice z, Block* out) {
-	if (z.data != out) {
-		memmove(out, z.data, z.size * sizeof(Block));
-	}
+	memcpy(out, z.data, z.size * sizeof(Block));
 	return z.size;
 }
 
@@ -701,7 +713,7 @@ static size_t copy(Slice z, Block* out) {
 // this operation is denoted as <<< (as opposed to << for left-shift by bits)
 static size_t super_lshift(Slice z, size_t shift, Block* out) {
 	if (z.size == 0) return 0;
-	if (shift == 0) return copy(z, out);
+	if (shift == 0) return move(z, out);
 	memmove(out + shift, z.data, z.size * sizeof(Block));
 	memset(out, 0, shift * sizeof(Block));
 	return z.size + shift;
@@ -881,7 +893,7 @@ static size_t long_div(const Slice a, const Slice b, Block* quo,
 	assert(b.size > 0);
 
 	if (a.size < b.size) {
-		*rem_size = copy(a, rem_data);
+		*rem_size = move(a, rem_data);
 		return 0;
 	}
 
@@ -902,7 +914,7 @@ static size_t long_div(const Slice a, const Slice b, Block* quo,
 
 	// if (b <<< 0) = b > a, a / b = 0 and a % b = a
 	if (cmp_res > 0 && size_diff == 0) {
-		*rem_size = copy(a, rem_data);
+		*rem_size = move(a, rem_data);
 		return 0;
 	}
 
@@ -930,7 +942,7 @@ static size_t long_div(const Slice a, const Slice b, Block* quo,
 	// rem will be equal to a at first
 	Slice rem = {
 		.data = rem_data,
-		.size = copy(a, rem_data)
+		.size = move(a, rem_data)
 	};
 
 	size_t restore_pos = arena->pos;
@@ -965,7 +977,7 @@ static size_t long_div(const Slice a, const Slice b, Block* quo,
 			block_shift--;
 		}
 		else {
-			c.size = copy(b, MUT_DATA(c));
+			c.size = move(b, MUT_DATA(c));
 		}
 	}
 
@@ -1074,7 +1086,7 @@ static size_t newton_reciprocal(Slice d, size_t precision, Block* out) {
 	double p = INITIAL_NEWTON_PRECISION;
 	size_t p_ceil = MIN(ceil(p), precision);
 
-	u64 restore_pos = arena->pos;
+	size_t restore_pos = arena->pos;
 
 	// calculate initial estimate of x = 48/17 - 32/17 * d
 	Slice x = { .data = out };
@@ -1168,7 +1180,7 @@ static size_t div_recpr(Slice num, Slice denum, Slice recpr, size_t precision, B
 	const size_t dq_cap = denum.size + shf_quo_cap;
 	const size_t rem_cap = MAX(num.size, dq_cap);
 
-	u64 restore_pos = arena->pos;
+	size_t restore_pos = arena->pos;
 
 	Slice quo = { .data = quo_data };
 	quo.size = mul(num, recpr, quo_data);
@@ -1216,33 +1228,85 @@ static size_t div_recpr(Slice num, Slice denum, Slice recpr, size_t precision, B
 	return quo.size;
 }
 
-// out = a^pow % mod
-static size_t powmod(Slice a, Slice pow, Slice mod, Block* out_data) {
-	assert(cmp(a, mod) < 0);
-	assert(mod.size);
+static size_t power(Slice a, size_t exp, Block* out_data) {
+	if (exp == 0) {
+		out_data[0] = 1;
+		return 1;
+	}
 
 	Slice out = { .data = out_data, .size = 1 };
 	out_data[0] = 1;
 
-	u64 restore_pos = arena->pos;
+	size_t restore_pos = arena->pos;
+	Block* tmp = PUSH_ARRAY(arena, Block, to_blocks(exp * width(a)) + 1);
+
+	const int bits = BLOCK_WIDTH - CLZ(exp);
+
+	for (int j = bits - 1; j >= 0; j--) {
+		// out = out * out
+		out.size = mul(out, out, tmp);
+		memcpy(out_data, tmp, out.size * sizeof(Block));
+		if (exp & ((Block)1 << j)) {
+			// out = a * out
+			out.size = mul(a, out, tmp);
+			memcpy(out_data, tmp, out.size * sizeof(Block));
+		}
+	}
+
+	arena_pop_to(arena, restore_pos);
+	return out.size;
+}
+
+// out = a^exp % mod
+static size_t powmod(Slice a, Slice exp, Slice mod, Block* out_data) {
+	assert(mod.size);
+	assert(out_data != a.data);
+
+	int cmp_a_mod = cmp(a, mod);
+	if (a.size == 0 || cmp_a_mod == 0) {
+		if (exp.size > 0) return 0;
+		out_data[0] = 1;
+		return 1;
+	}
+
+	size_t restore_pos = arena->pos;
+
+	if (cmp_a_mod > 0) {
+		Block* rem = PUSH_ARRAY(arena, Block, a.size);
+		long_div(a, mod, NULL, rem, &a.size);
+		if (a.size == 0) {
+			arena_pop_to(arena, restore_pos);
+			if (exp.size > 0) return 0;
+			out_data[0] = 1;
+			return 1;
+		}
+		a.data = rem;
+	}
+
+	Slice out = { .data = out_data, .size = 1 };
+	out_data[0] = 1;
+
 	Slice tmp = { PUSH_ARRAY(arena, Block, 2 * mod.size) };
 
-	for (size_t i = pow.size; i > 0; i--) {
-		Block pow_block = pow.data[i - 1];
-		const int bits = (i == pow.size) ?
-			BLOCK_WIDTH - CLZ(pow_block) : BLOCK_WIDTH;
+	for (size_t i = exp.size; i > 0; i--) {
+		Block exp_block = exp.data[i - 1];
+		const int bits = (i == exp.size) ?
+			BLOCK_WIDTH - CLZ(exp_block) : BLOCK_WIDTH;
 
 		for (int j = bits - 1; j >= 0; j--) {
 			// tmp = out * out
 			tmp.size = mul(out, out, MUT_DATA(tmp));
-			// out = tmp % mod
-			long_div(tmp, mod, NULL, MUT_DATA(out), &out.size);
-			if (pow_block & ((Block)1 << j)) {
+			// tmp = tmp % mod
+			// we don't pass out_data to div directly, as rem_data could require more space than out
+			long_div(tmp, mod, NULL, MUT_DATA(tmp), &out.size);
+			// copy tmp to out 
+			memcpy(out_data, tmp.data, sizeof(Block) * out.size);
+			if (exp_block & ((Block)1 << j)) {
 				// tmp = a * out
 				tmp.size = mul(a, out, MUT_DATA(tmp));
-				// out = tmp % mod
-				long_div(tmp, mod, NULL, MUT_DATA(out), &out.size);
-				memcpy(out_data, MUT_DATA(tmp), sizeof(Block) * out.size);
+				// tmp = tmp % mod, copy tmp to out
+				long_div(tmp, mod, NULL, MUT_DATA(tmp), &out.size);
+				memcpy(out_data, tmp.data, sizeof(Block) * out.size);
 			}
 		}
 	}
@@ -1251,29 +1315,66 @@ static size_t powmod(Slice a, Slice pow, Slice mod, Block* out_data) {
 	return out.size;
 }
 
-static size_t powmod_recpr(Slice a, Slice pow, Slice mod, Slice recpr, size_t precision, Block* out_data) {
-	assert(cmp(a, mod) < 0);
+static size_t powmod_recpr(Slice a, Slice exp, Slice mod, Slice recpr, size_t precision, Block* out_data) {
 	assert(mod.size);
-	u64 restore_pos = arena->pos;
-	Slice tmp = { .data = PUSH_ARRAY(arena, Block, pow.size * 2) };
-	Block* quo_tmp = PUSH_ARRAY(arena, Block, pow.size);
+	assert(out_data != a.data);
+
+	int cmp_a_mod = cmp(a, mod);
+	if (a.size == 0 || cmp_a_mod == 0) {
+		if (exp.size > 0) return 0;
+		out_data[0] = 1;
+		return 1;
+	}
+
+	size_t restore_pos = arena->pos;
+
+	if (cmp_a_mod > 0) {
+		size_t quo_cap, rem_cap;
+		quo_cap = div_recpr_cap(a.size, mod.size, recpr.size, precision, out_data);
+		Block* rem = PUSH_ARRAY(arena, Block, rem_cap);
+		Block* quo = PUSH_ARRAY(arena, Block, quo_cap);
+		div_recpr(a, mod, recpr, precision, quo, rem, &a.size);
+		if (a.size == 0) {
+			arena_pop_to(arena, restore_pos);
+			if (exp.size > 0) return 0;
+			out_data[0] = 1;
+			return 1;
+		}
+		POP_ARRAY(arena, Block, quo_cap);
+		a.data = rem;
+	}
+
 	Slice out = { .data = out_data, .size = 1 };
 	out_data[0] = 1;
 
-	for (size_t i = pow.size; i > 0; i--) {
-		Block pow_block = pow.data[i - 1];
-		const int bits = (i == pow.size) ?
+	size_t num_cap = mod.size * 2;
+	size_t quo_cap;
+	size_t rem_cap;
+
+	quo_cap = div_recpr_cap(num_cap, mod.size, recpr.size, precision, &rem_cap);
+
+	Slice num = { .data = PUSH_ARRAY(arena, Block, num_cap) };
+	Block* quo = PUSH_ARRAY(arena, Block, quo_cap);
+	Block* rem = PUSH_ARRAY(arena, Block, rem_cap);
+
+	for (size_t i = exp.size; i > 0; i--) {
+		Block pow_block = exp.data[i - 1];
+		const int bits = (i == exp.size) ?
 			BLOCK_WIDTH - CLZ(pow_block) : BLOCK_WIDTH;
 		for (int j = bits - 1; j >= 0; j--) {
-			// tmp = out * out
-			tmp.size = mul(out, out, MUT_DATA(tmp));
-			// out = tmp % mod
-			div_recpr(tmp, mod, recpr, precision, quo_tmp, MUT_DATA(out), &out.size);
+			// num = out * out
+			num.size = mul(out, out, MUT_DATA(num));
+			// rem = num % mod
+			// we don't pass out_data to div directly, as rem_data could require more space than out
+			div_recpr(num, mod, recpr, precision, quo, rem, &out.size);
+			// copy rem to out
+			memcpy(out_data, rem, sizeof(Block) * out.size);
 			if (pow_block & ((Block)1 << j)) {
-				// tmp = a * out
-				tmp.size = mul(a, out, MUT_DATA(tmp));
-				// out = tmp % mod
-				div_recpr(tmp, mod, recpr, precision, quo_tmp, MUT_DATA(out), &out.size);
+				// num = a * out
+				num.size = mul(a, out, MUT_DATA(num));
+				// rem = num % mod, copy rem to out
+				div_recpr(num, mod, recpr, precision, quo, rem, &out.size);
+				memcpy(out_data, rem, sizeof(Block) * out.size);
 			}
 		}
 	}
@@ -1300,20 +1401,18 @@ static size_t decimal_width(size_t bit_width) {
 
 static size_t divmod10(Slice x, char* str) {
 	if (x.size == 0) {
-		str[0] = '0';
-		str[1] = '\0';
-		return 1;
+		return 0;
 	}
 
 	const size_t q_cap = x.size;
 	const size_t tmp_cap = x.size;
 
-	u64 restore_pos = arena->pos;
+	size_t restore_pos = arena->pos;
 	Block* const q_data = PUSH_ARRAY(arena, Block, q_cap);
 	Block* const tmp_data = PUSH_ARRAY(arena, Block, tmp_cap);
 	Slice tmp = {
 		.data = tmp_data,
-		.size = copy(x, tmp_data)
+		.size = move(x, tmp_data)
 	};
 
 	USmallInt rem;
@@ -1341,11 +1440,9 @@ static size_t divmod10(Slice x, char* str) {
 
 static size_t divmod10_recpr(Slice x, char* str) {
 	if (x.size == 0) {
-		str[0] = '0';
-		str[1] = '\0';
-		return 1;
+		return 0;
 	}
-	u64 restore_pos = arena->pos;
+	size_t restore_pos = arena->pos;
 
 	size_t precision = MAX(width(x), TEN_WIDTH);
 	size_t new_p;
@@ -1364,7 +1461,7 @@ static size_t divmod10_recpr(Slice x, char* str) {
 	Block* const num_data = PUSH_ARRAY(arena, Block, num_cap);
 	Slice num = {
 		.data = num_data,
-		.size = copy(x, num_data)
+		.size = move(x, num_data)
 	};
 
 	Block* rem_data = PUSH_ARRAY(arena, Block, rem_cap);
@@ -1396,12 +1493,9 @@ static size_t divmod10_recpr(Slice x, char* str) {
 
 static size_t double_dabble(Slice x, char* str) {
 	if (x.size == 0) {
-		str[0] = '0';
-		str[1] = '\0';
-		return 1;
+		return 0;
 	}
-
-	u64 restore_pos = arena->pos;
+	size_t restore_pos = arena->pos;
 
 	const size_t n = width(x);
 	const size_t buf_max_width = 4 * decimal_width(n);
@@ -1433,7 +1527,6 @@ static size_t double_dabble(Slice x, char* str) {
 		ASSIGN_BIT(buf.data, 0, GET_BIT(x.data, n - i));
 	}
 
-	str[bcd_cnt] = '\0';
 	int shift = 0;
 	for (size_t i = 0; i < bcd_cnt; i++) {
 		str[bcd_cnt - i - 1] = '0' + ((buf.data[i / BCD_PER_BLOCK] & (mask << shift)) >> shift);
@@ -1443,5 +1536,45 @@ static size_t double_dabble(Slice x, char* str) {
 
 	arena_pop_to(arena, restore_pos);
 	return bcd_cnt;
+}
+
+size_t decimal_split(Slice x, char* str) {
+	if (x.size == 0) {
+		return 0;
+	}
+	if (x.size == 1) {
+		static char tmp[MAX_DEC_INT_DIGITS(Block)];
+		int len = sprintf(tmp, FORMAT_DEC, x.data[0]);
+		memcpy(str, tmp, sizeof(char) * len);
+		return len;
+	}
+	size_t restore_pos = arena->pos;
+
+	size_t x_width = width(x);
+	size_t dec_width = decimal_width(x_width);
+	size_t half_dw = dec_width / 2;
+	Slice ten_pow_hdw = { PUSH_ARRAY(arena, Block, to_blocks(half_dw * TEN_WIDTH)) };
+	ten_pow_hdw.size = power(TEN, half_dw, MUT_DATA(ten_pow_hdw));
+	size_t precision = MAX(x_width, width(ten_pow_hdw));
+	Slice recpr = { PUSH_ARRAY(arena, Block, newton_reciprocal_cap(precision)) };
+	recpr.size = newton_reciprocal(ten_pow_hdw, precision, MUT_DATA(recpr));
+
+	size_t quo_cap, rem_cap;
+	quo_cap = div_recpr_cap(x.size, ten_pow_hdw.size, recpr.size, precision, &rem_cap);
+	Slice quo = { PUSH_ARRAY(arena, Block, quo_cap) };
+	Slice rem = { PUSH_ARRAY(arena, Block, rem_cap) };
+	quo.size = div_recpr(x, ten_pow_hdw, recpr, precision, MUT_DATA(quo), MUT_DATA(rem), &rem.size);
+	size_t quo_dw = decimal_split(quo, str);
+	size_t rem_dw = decimal_split(rem, str + quo_dw);
+
+	arena_pop_to(arena, restore_pos);
+
+	if (quo_dw > 0) {
+		if (rem_dw < half_dw) {
+			memmove(str + quo_dw + half_dw - rem_dw, str + quo_dw, sizeof(char) * rem_dw);
+			memset(str + quo_dw, '0', sizeof(char) * (half_dw - rem_dw));
+		}
+		return quo_dw + half_dw;
+	} else return rem_dw;
 }
 

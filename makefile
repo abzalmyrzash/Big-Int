@@ -1,11 +1,12 @@
-CC_FLAGS := -g -O3 --std=c2x
+CC_FLAGS := -g -O3 --std=c23 -D_CRT_SECURE_NO_WARNINGS
 
 ifdef OS
 	RM = del /Q
 	FixPath = $(subst /,\,$1)
-	CC = gcc
+	CC = clang
 	DEBUG := debug
 	RELEASE := release
+	EXE := main.exe
 
 else
 	ifeq ($(shell uname), Linux)
@@ -14,8 +15,9 @@ else
 		CC := gcc-14
 		LD_FLAGS := -lm -lc
 		# CC_FLAGS += -fsanitize=address
-		DEBUG := linux-debug
-		RELEASE := linux-release
+		DEBUG := debug-linux
+		RELEASE := release-linux
+		EXE := main.out
 	endif
 endif
 
@@ -30,7 +32,7 @@ CC_FLAGS += $(USER_FLAGS)
 
 .PHONY: all clean debug release
 
-all: $(BUILD)/main
+all: $(BUILD)/$(EXE)
 
 debug:
 	@echo Debug build
@@ -40,8 +42,8 @@ release:
 	@echo Release build
 	@$(MAKE) --no-print-directory BUILD=$(RELEASE) EXTRA_FLAGS="$(RELEASE_FLAGS)"
 
-$(BUILD)/main: main.c $(BUILD)/fib.o $(BUILD)/factorial.o $(BUILD)/bigint.o $(BUILD)/bigint_rand.o $(BUILD)/arena.o utils.h
-	$(CC) $(CC_FLAGS) main.c $(BUILD)/*.o -o $(BUILD)/main $(LD_FLAGS)
+$(BUILD)/$(EXE): main.c $(BUILD)/fib.o $(BUILD)/factorial.o $(BUILD)/bigint.o $(BUILD)/bigint_rand.o $(BUILD)/arena.o utils.h
+	$(CC) $(CC_FLAGS) main.c $(BUILD)/*.o -o $(BUILD)/$(EXE) $(LD_FLAGS)
 
 $(BUILD)/bigint.o: bigint.c bigint.h bigint_impl.h bigint_impl_basic.h bigint_params.h utils.h
 	$(CC) $(CC_FLAGS) -c bigint.c -o $(BUILD)/bigint.o
