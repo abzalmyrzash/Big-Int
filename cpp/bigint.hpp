@@ -8,10 +8,16 @@ typedef uint64_t USmallInt;
 class BigIntClass {
 	public:
 		BigInt x;
+		int id;
+
+		BigIntClass(BigIntClass&&);
+		BigIntClass(const BigIntClass&);
 		BigIntClass();
 		BigIntClass(SmallInt v);
 		~BigIntClass();
 		BigIntClass operator=(SmallInt v);
+		BigIntClass operator=(const BigIntClass& b);
+		BigIntClass operator=(BigIntClass&& b);
 		BigIntClass operator+(const BigIntClass& b);
 		BigIntClass operator-(const BigIntClass& b);
 		BigIntClass operator*(const BigIntClass& b);

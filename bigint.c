@@ -128,7 +128,7 @@ BigInt bigint_realloc(BigInt* z_ptr, size_t cap, bool keep_data) {
 		z = realloc(z, DATA_OFFSET + cap * sizeof(Block));
 		if (!z) return NULL;
 #ifndef NDEBUG
-		if (log_memory) printf("%p reallocated to %p\n", *z_ptr, z);
+		if (log_memory) printf("0x%p reallocated to 0x%p\n", *z_ptr, z);
 #endif
 		cnt_realloc++;
 	} else {
@@ -186,7 +186,7 @@ void bigint_free(BigInt z) {
 		free(z);
 		cnt_free++;
 #ifndef NDEBUG
-		if (log_memory) printf("%p destroyed\n", z);
+		if (log_memory) printf("0x%p destroyed\n", z);
 #endif
 	}
 }
@@ -536,76 +536,84 @@ BigInt bigint_mul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 
 // |out| = |a| / |b|,
 // |rem| = |a| % |b|
-BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_ptr) {
+BigIntDiv bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* quo_ptr, BigInt* rem_ptr) {
 	assert(a);
 	assert(b);
-	assert(out_ptr);
+	assert(quo_ptr || rem_ptr);
 
 	if (b->size == 0) {
 		bigint_errno = BIGINT_ERR_DIV_BY_ZERO;
 		ELOG_STR("DIVISION BY ZERO");
-		return NULL;
+		return (BigIntDiv) { NULL };
 	}
 
 	u64 restore_pos = arena->pos;
 
-	BigInt out = *out_ptr;
+	BigInt quo = quo_ptr ? *quo_ptr : NULL;
 	BigInt rem = rem_ptr ? *rem_ptr : NULL;
 
 	Slice A = { .data = a->data, .size = a->size };
 	Slice B = { .data = b->data, .size = b->size };
 
-	Block* rem_data;
-	size_t rem_size;
+	Block *quo_data, *rem_data;
+	size_t quo_size, rem_size;
+	
+	const size_t quo_cap = A.size - B.size + 1;
+	const size_t rem_cap = A.size;
 
-	if (out == a) {
-		Block* tmp = PUSH_ARRAY(arena, Block, A.size);
-		A.data = memcpy(tmp, A.data, A.size * sizeof(Block));
-	} else if (out == b) {
-		Block* tmp = PUSH_ARRAY(arena, Block, B.size);
-		B.data = memcpy(tmp, B.data, B.size * sizeof(Block));
+	if (quo_ptr) {
+		if (quo == a) {
+			Block* tmp = PUSH_ARRAY(arena, Block, A.size);
+			A.data = memcpy(tmp, A.data, A.size * sizeof(Block));
+		} else if (quo == b) {
+			Block* tmp = PUSH_ARRAY(arena, Block, B.size);
+			B.data = memcpy(tmp, B.data, B.size * sizeof(Block));
+		}
+		quo = bigint_reserve(quo_ptr, quo_cap, CLEAR_DATA);
+		if (!quo) goto error;
+		quo_data = quo->data;
+	} else {
+		quo_data = PUSH_ARRAY(arena, Block, quo_cap);
 	}
 
-	out = bigint_reserve(&out, A.size - B.size + 1, CLEAR_DATA);
-	if (!out) goto error;
-
 	if (rem_ptr) {
-		rem = bigint_reserve(&rem, A.size, CLEAR_DATA);
-		if (!rem) goto error;
-		rem_data = rem->data;
 		if (rem == b) {
 			Block* tmp = PUSH_ARRAY(arena, Block, B.size);
 			B.data = memcpy(tmp, B.data, B.size * sizeof(Block));
 		}
+		rem = bigint_reserve(rem_ptr, rem_cap, CLEAR_DATA);
+		if (!rem) goto error;
+		rem_data = rem->data;
 	} else {
-		rem_data = PUSH_ARRAY(arena, Block, A.size);
+		rem_data = PUSH_ARRAY(arena, Block, rem_cap);
 	}
 
-	out->size = long_div(A, B, out->data, rem_data, &rem_size);
+	quo_size = long_div(A, B, quo_data, rem_data, &rem_size);
 	if (rem) rem->size = rem_size;
+	if (quo) quo->size = quo_size;
 
 ret:
 	arena_pop_to(arena, restore_pos);
-	if (rem_ptr) *rem_ptr = rem;
-	return *out_ptr = out;
+	return (BigIntDiv) { quo, rem };
 
 error:
 	arena_pop_to(arena, restore_pos);
-	return NULL;
+	return (BigIntDiv) { NULL };
 }
 
 // out = a / b,
 // rem = a % b
-BigInt bigint_div(ConstBigInt a, ConstBigInt b, BigInt* out_ptr, BigInt* rem_ptr) {
+BigIntDiv bigint_div(ConstBigInt a, ConstBigInt b, BigInt* quo_ptr, BigInt* rem_ptr) {
 	assert(a);
 	assert(b);
-	assert(out_ptr);
-	bool out_sign = a->sign ^ b->sign;
+	assert(quo_ptr || rem_ptr);
+	bool quo_sign = a->sign ^ b->sign;
 	bool rem_sign = a->sign;
-	if (!bigint_udiv(a, b, out_ptr, rem_ptr)) return NULL;
-	(*out_ptr)->sign = out_sign;
-	if (rem_ptr) (*rem_ptr)->sign = rem_sign;
-	return *out_ptr;
+	BigIntDiv qr = bigint_udiv(a, b, quo_ptr, rem_ptr);
+	if (!qr.q && !qr.r) return qr;
+	if (qr.q) qr.q->sign = quo_sign;
+	if (qr.r) qr.r->sign = rem_sign;
+	return qr;
 }
 
 BigInt bigint_lshift_blocks(ConstBigInt z, size_t shift, BigInt* out_ptr) {

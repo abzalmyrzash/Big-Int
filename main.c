@@ -136,7 +136,7 @@ int main()
 	printf("A * B = ");
 	bigint_printf("%d\n", res);
 
-	assert(bigint_cmp(A, bigint_div(res, B, &res, &rem)) == 0);
+	assert(bigint_cmp(A, bigint_div(res, B, &res, &rem).q) == 0);
 	assert(bigint_cmp_small(rem, 0) == 0);
 
 	bigint_div(A, B, &res, &rem);

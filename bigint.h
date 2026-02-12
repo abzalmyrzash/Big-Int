@@ -13,6 +13,11 @@ extern int bigint_errno;
 
 typedef struct bigint* BigInt;
 typedef const struct bigint* ConstBigInt;
+
+typedef struct {
+	BigInt q, r;
+} BigIntDiv;
+
 typedef struct {
 	uint8_t base;
 	bool is_unsigned;
@@ -80,7 +85,7 @@ BigInt bigint_usub(ConstBigInt a, ConstBigInt b, BigInt* out);
 BigInt bigint_umul(ConstBigInt a, ConstBigInt b, BigInt* out);
 
 // unsigned division
-BigInt bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* quo, BigInt* rem);
+BigIntDiv bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* quo, BigInt* rem);
 
 // signed addition
 BigInt bigint_add(ConstBigInt a, ConstBigInt b, BigInt* out);
@@ -92,7 +97,7 @@ BigInt bigint_sub(ConstBigInt a, ConstBigInt b, BigInt* out);
 BigInt bigint_mul(ConstBigInt a, ConstBigInt b, BigInt* out);
 
 // signed division
-BigInt bigint_div(ConstBigInt a, ConstBigInt b, BigInt* quo, BigInt* rem);
+BigIntDiv bigint_div(ConstBigInt a, ConstBigInt b, BigInt* quo, BigInt* rem);
 
 // a^pow % mod (unsigned)
 BigInt bigint_powmod(ConstBigInt a, ConstBigInt pow, ConstBigInt mod, BigInt* out_ptr);
