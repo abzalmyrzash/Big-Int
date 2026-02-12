@@ -34,6 +34,7 @@ BigInt bigint_reserve(BigInt* z, size_t cap, bool keep_data);
 void bigint_free(BigInt z);
 void bigint_structinfo(void);
 void bigint_memstat(void);
+void bigint_log_memory(bool log_mem);
 
 size_t bigint_size(ConstBigInt z);
 size_t bigint_width(ConstBigInt z);
@@ -105,7 +106,7 @@ char* bigint_str(ConstBigInt z, BigInt_FormatSpec bifs);
 char* bigint_hex_str(ConstBigInt z, BigInt_FormatSpec bifs);
 char* bigint_dec_str(ConstBigInt z, BigInt_FormatSpec bifs);
 
-BigInt bigint_scan(const char* str, BigInt* out);
+BigInt bigint_scan(const char* str, size_t str_len, BigInt* out);
 
 int bigint_fprintf(FILE* file, const char* const format, ...);
 int bigint_printf(const char* const format, ...);

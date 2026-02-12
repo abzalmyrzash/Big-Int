@@ -17,6 +17,7 @@ int main()
 	clock_t start;
 	float elapsed_time;
 	size_t size;
+	size_t precision;
 
 	bigint_init();
 
@@ -70,6 +71,8 @@ int main()
 
 	// fgets(buffer, buffer_size, stdin);
 	// bigint_scan(buffer, &num);
+
+	/*
 	size_t max_width = 100'000;
 	scanf("%zu", &max_width);
 	bigint_rand(&num, max_width);
@@ -85,7 +88,7 @@ int main()
 	return 0;
 
 	scanf("%zu", &size);
-	size_t precision = size * BIGINT_BLOCK_WIDTH;
+	precision = size * BIGINT_BLOCK_WIDTH;
 	bigint_rand(&A, precision);
 	bigint_rand(&B, precision);
 
@@ -95,16 +98,15 @@ int main()
 	printf("Time: %.3f s\n", elapsed_time);
 	printf("Size: %zu\n", bigint_size(res));
 	return 0;
+	*/
 
-	/*
 	printf("Enter a: ");
 	fgets(buffer, buffer_size, stdin);
-	bigint_scan(buffer, &A);
+	bigint_scan(buffer, strlen(buffer), &A);
 
 	printf("Enter b: ");
 	fgets(buffer, buffer_size, stdin);
-	bigint_scan(buffer, &B);
-	*/
+	bigint_scan(buffer, strlen(buffer), &B);
 
 
 	bigint_printf("%p0_x\n", A);
@@ -149,6 +151,8 @@ int main()
 	bigint_printf("%d\n", res);
 
 	assert(bigint_cmp(res, A) == 0);
+
+	precision = MAX(bigint_width(A), bigint_width(B));
 
 	bigint_recpr(B, precision, &recpr);
 	bigint_printf("1 / B = ");

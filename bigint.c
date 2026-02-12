@@ -12,6 +12,8 @@ static unsigned long long cnt_alloc = 0;
 static unsigned long long cnt_realloc = 0;
 static unsigned long long cnt_free = 0;
 
+static bool log_memory = false;
+
 #define AS_SLICE(x) (Slice) _Generic((x),                         \
 	BigInt:      (Slice){ .data = (x)->data, .size = (x)->size }, \
 	ConstBigInt: (Slice){ .data = (x)->data, .size = (x)->size })
@@ -62,6 +64,10 @@ void bigint_finish(void) {
 	arena_destroy(arena);
 }
 
+void bigint_log_memory(bool log_mem) {
+	log_memory = log_mem;
+}
+
 BigInt bigint_alloc(size_t cap) {
 	if (cap > MAX_CAP) {
 		ELOG_STR("cap exceeds MAX_CAP");
@@ -75,6 +81,9 @@ BigInt bigint_alloc(size_t cap) {
 		ELOG("Parameters: cap = %zu\n", cap);
 		return NULL;
 	}
+#ifndef NDEBUG
+	if (log_memory) printf("0x%p created\n", z);
+#endif
 	cnt_alloc++;
 	z->cap = cap;
 	z->size = 0;
@@ -95,6 +104,9 @@ BigInt bigint_zalloc(size_t cap) {
 		ELOG("Parameters: cap = %zu\n", cap);
 		return NULL;
 	}
+#ifndef NDEBUG
+	if (log_memory) printf("0x%p created\n", z);
+#endif
 	cnt_alloc++;
 	z->cap = cap;
 	return z;
@@ -107,10 +119,18 @@ BigInt bigint_realloc(BigInt* z_ptr, size_t cap, bool keep_data) {
 		return NULL;
 	}
 	BigInt z = *z_ptr;
-	if (!z) return *z_ptr = bigint_alloc(cap);
+	if (!z) {
+		z = bigint_alloc(cap);
+		if (!z) return NULL;
+		return *z_ptr = z;
+	}
 	if (keep_data || cap < z->cap) {
 		z = realloc(z, DATA_OFFSET + cap * sizeof(Block));
-		if (z) cnt_realloc++;
+		if (!z) return NULL;
+#ifndef NDEBUG
+		if (log_memory) printf("%p reallocated to %p\n", *z_ptr, z);
+#endif
+		cnt_realloc++;
 	} else {
 		bigint_free(z);
 		z = bigint_alloc(cap);
@@ -165,6 +185,9 @@ void bigint_free(BigInt z) {
 	if (z) {
 		free(z);
 		cnt_free++;
+#ifndef NDEBUG
+		if (log_memory) printf("%p destroyed\n", z);
+#endif
 	}
 }
 
@@ -221,7 +244,11 @@ BigInt bigint_create_zero() {
 
 BigInt bigint_set_zero(BigInt* z_ptr) {
 	BigInt z = *z_ptr;
-	if (!z) return *z_ptr = bigint_zalloc(0);
+	if (!z) {
+		z = bigint_zalloc(0);
+		if (!z) return NULL;
+		*z_ptr = z;
+	}
 	z->size = 0;
 	return z;
 }
@@ -501,9 +528,10 @@ BigInt bigint_mul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 	assert(out_ptr);
 
 	bool out_sign = a->sign ^ b->sign;
-	bigint_umul(a, b, out_ptr);
-	(*out_ptr)->sign = out_sign;
-	return *out_ptr;
+	BigInt out = bigint_umul(a, b, out_ptr);
+	if (!out) return NULL;
+	out->sign = out_sign;
+	return out;
 }
 
 // |out| = |a| / |b|,
@@ -984,8 +1012,7 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 BigInt bigint_scan_hex(const char* str, size_t str_len, BigInt* out_ptr);
 BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr);
 
-BigInt bigint_scan(const char* str, BigInt* out_ptr) {
-	size_t str_len = strlen(str);
+BigInt bigint_scan(const char* str, size_t str_len, BigInt* out_ptr) {
 	size_t offset = 0;
 	bool sign = false;
 	BigInt out;
