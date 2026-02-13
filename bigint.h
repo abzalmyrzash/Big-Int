@@ -69,8 +69,11 @@ USmallInt bigint_usmall(ConstBigInt a);
 // returns the first "big digit" with a sign, as a small signed integer
 SmallInt bigint_small(ConstBigInt a);
 
-// unsigned comparison of big integer with small integer
-int bigint_ucmp_small(ConstBigInt a, USmallInt b);
+// unsigned comparison of big integer with unsigned small integer
+int bigint_ucmp_usmall(ConstBigInt a, USmallInt b);
+
+// signed comparison of big integer with unsigned small integer
+int bigint_cmp_usmall(ConstBigInt a, USmallInt b);
 
 // signed comparison of big integer with small integer
 int bigint_cmp_small(ConstBigInt a, SmallInt b);

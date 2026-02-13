@@ -21,6 +21,9 @@ int main()
 
 	bigint_init();
 
+	run(bigFib);
+	return 0;
+
 	BigInt A = NULL;
 	BigInt B = NULL;
 	BigInt C = NULL;

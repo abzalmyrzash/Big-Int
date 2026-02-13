@@ -347,16 +347,29 @@ SmallInt bigint_small(ConstBigInt a) {
 	return (SmallInt)a->data[0];
 }
 
-int bigint_ucmp_small(ConstBigInt a, USmallInt b) {
-	if (a->size == 0) return b;
+int bigint_ucmp_usmall(ConstBigInt a, USmallInt b) {
+	if (a->size == 0) return -(b > 0);
 	if (a->size > 1) return 1;
-	return a->data[0] - b;
+	if (a->data[0] < b) return -1;
+	return a->data[0] > b;
+}
+
+int bigint_cmp_usmall(ConstBigInt a, USmallInt b) {
+	if (a->size == 0) return -(b > 0);
+	if (a->sign) return -1;
+	if (a->size > 1) return 1;
+	if (a->data[0] < b) return -1;
+	return a->data[0] > b;
 }
 
 int bigint_cmp_small(ConstBigInt a, SmallInt b) {
-	if (a->size == 0) return b;
-	if (a->size > 1) return (a->sign) ? -1 : 1;
-	return bigint_small(a) - b;
+	if (a->size == 0) {
+		return (b < 0) ? 1 : -(b > 0);
+	}
+	if (a->size > 1 || CLZ(a->data[0]) == 0) return (a->sign) ? -1 : 1;
+	const int a_val = (a->sign) ? -a->data[0] : a->data[0];
+	if (a_val < b) return -1;
+	return a_val > b;
 }
 
 // |out| = |a| + |b|
