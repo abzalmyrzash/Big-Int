@@ -1,0 +1,26 @@
+PAGE 1 - INTRODUCTION
+
+This is a program that uses the RSA public-key encryption algorithm.
+
+To get started, you need to generate a pair of keys - one public (.pub file) and
+one private (.prv file). It may take up to a few minutes, but you only need to
+do it once.
+
+You will share your public key with your friend, and obviously, keep your priva-
+te key to yourself.
+
+Your friend can then use your public key to encrypt a message, which you can de-
+crypt with your private key (and ideally no one else).
+
+Similarly, you will ask for your friend's public key to send him encrypted mes-
+sages only he can decrypt.
+
+Make sure that you have the required files in the program's keys directory and
+have set the keys before encryption/decryption.
+
+Every algorithm including arbitrary-precision math was implemented from scratch
+by myself (except for CSPRNG), so use it at your own risk. In theory, it should
+be secure, since it generates 2048-bit RSA keys and the CSPRNG is provided by
+the OS. At least more secure than the old 64-bit version. It is also slow, how-
+ever.
+

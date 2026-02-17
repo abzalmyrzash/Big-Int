@@ -1,0 +1,32 @@
+PAGE 2 - COMMANDS
+
+  Cmd  Arguments       Description
++----+---------------+---------------------------------------------------------+
+| h  | <page-number> | Show help, go to <page-number> if provided.             |
++----+---------------+---------------------------------------------------------+
+| g  | <name>        | Generate a pair of keys. Saves the public key in        |
+|    |               | <name>.pub and the private key in <name>.prv,           |
+|    |               | in the keys directory.                                  |
++----+---------------+---------------------------------------------------------+
+| k  | <name1>.prv   | Load the keys from the given filenames (can be in any   |
+|    | <name2>.pub   | order, since they will be matched by their extensions). |
+|    |               | Key names are saved in keynames.txt, so the program can |
+|    |               | load them on startup.                                   |
+|    |               | Shows current settings when no arguments are given.     |
++----+---------------+---------------------------------------------------------+
+| e  | <line>        | Encrypt one line of text.                               |
++----+---------------+---------------------------------------------------------+
+| em | <multiline>   | Allows user to input multiple lines until they send an  |
+|    |               | an EOF signal*, and encrypts it all at once.            |
++----+---------------+---------------------------------------------------------+
+| ef | <filename>    | Encrypt file.                                           |
++----+---------------+---------------------------------------------------------+
+| d  | <ciphertexts> | Decrypt ciphertext(s).                                  |
++----+---------------+---------------------------------------------------------+
+| df | <filenames>   | Decrypt file.                                           |
++----+---------------+---------------------------------------------------------+
+
+* To send an EOF signal:
+  On Windows, press Enter, Ctrl-Z, then Enter again.
+  On Linux, press Ctrl-D.
+

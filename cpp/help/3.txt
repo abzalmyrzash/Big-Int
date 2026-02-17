@@ -1,0 +1,20 @@
+PAGE 3 - HOW DOES THIS EVEN WORK?
+
+The RSA algorithm outputs three numbers: N, E and D. Though it first needs to
+secretly generate two prime numbers, P and Q, which are multiplied to make N.
+N is part of both the public and private keys. E is part of the public key and
+is used for encryption, and D is part of the private key used for encryption.
+
+Long story short, the security of the algorithm rests on the fact that it is
+hard to factor N into P and Q. Because once you know P and Q, you can calculate
+the private number D from the public numbers N and E. And boom, you are dead.
+
+Also, theoretically you can "decrypt" plaintext, and then "encrypt" it back
+to get your original plaintext. Not in this program though because there is an
+additional step of Base64 encoding/decoding (binary data <-> text conversion)
+that breaks when you try to decode plaintext that contains non-Base64 symbols.
+
+However, the process of "decrypting" plaintext (or rather the hash of plaintext)
+is legitimately used for digital signatures. May or may not add this to the pro-
+gram later. Should first extend the algorithm to generate larger keys.
+
