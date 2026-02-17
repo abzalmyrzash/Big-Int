@@ -16,5 +16,5 @@ that breaks when you try to decode plaintext that contains non-Base64 symbols.
 
 However, the process of "decrypting" plaintext (or rather the hash of plaintext)
 is legitimately used for digital signatures. May or may not add this to the pro-
-gram later. Should first extend the algorithm to generate larger keys.
+gram later.
 
