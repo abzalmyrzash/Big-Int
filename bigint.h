@@ -59,6 +59,10 @@ BigInt bigint_set_small(BigInt* z, SmallInt v);
 BigInt bigint_set_usmall(BigInt* z, USmallInt v);
 
 BigInt bigint_copy(BigInt* dst, ConstBigInt src);
+BigInt bigint_copy_blocks(BigInt* dst, BigInt_Block* src_blocks, size_t size);
+
+BigInt bigint_from_little_endian(const void* src, size_t bitpos, size_t width, BigInt* dst);
+void   bigint_to_little_endian(ConstBigInt src, void* dst, size_t bitpos);
 
 int bigint_ucmp(ConstBigInt a, ConstBigInt b);
 int bigint_cmp(ConstBigInt a, ConstBigInt b);
@@ -110,6 +114,12 @@ BigInt bigint_rshift(ConstBigInt z, size_t shift, BigInt* out);
 BigInt bigint_lshift_blocks(ConstBigInt z, size_t shift, BigInt* out);
 BigInt bigint_rshift_blocks(ConstBigInt z, size_t shift, BigInt* out);
 
+bool bigint_bit_get(ConstBigInt z, size_t bit);
+BigInt bigint_bit_set(BigInt* z, size_t bit);
+BigInt bigint_bit_unset(BigInt z, size_t bit);
+BigInt bigint_bit_set_to(BigInt* z, size_t bit, bool val);
+BigInt bigint_bit_toggle(BigInt* z, size_t bit);
+
 char* bigint_str(ConstBigInt z, BigInt_FormatSpec bifs);
 char* bigint_hex_str(ConstBigInt z, BigInt_FormatSpec bifs);
 char* bigint_dec_str(ConstBigInt z, BigInt_FormatSpec bifs);
@@ -120,11 +130,18 @@ int bigint_fprintf(FILE* file, const char* const format, ...);
 int bigint_printf(const char* const format, ...);
 
 // bool set_newton_precision(size_t p);
-BigInt bigint_urecpr(ConstBigInt d, size_t precision, BigInt* out);
 BigInt bigint_recpr(ConstBigInt d, size_t precision, BigInt* out);
 
+BigIntDiv bigint_udiv_long(ConstBigInt a, ConstBigInt b, BigInt* quo, BigInt* rem);
+BigIntDiv bigint_div_long(ConstBigInt a, ConstBigInt b, BigInt* quo, BigInt* rem);
+
 // divide using reciprocal
-BigInt bigint_udiv_recpr(ConstBigInt n, ConstBigInt d, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem);
-BigInt bigint_div_recpr(ConstBigInt n, ConstBigInt d, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem);
+BigIntDiv bigint_udiv_recpr(ConstBigInt n, ConstBigInt d, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem);
+BigIntDiv bigint_div_recpr(ConstBigInt n, ConstBigInt d, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem);
 
 size_t bigint_decimal_width(ConstBigInt num);
+
+void bigint_warn_bad_recpr(bool y);
+void bigint_bad_recpr_stat();
+
+bool bigint_is_valid(ConstBigInt z);

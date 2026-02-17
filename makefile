@@ -21,7 +21,7 @@ else
 	endif
 endif
 
-DEBUG_FLAGS := -DDEBUG
+DEBUG_FLAGS := -DDEBUG -fsanitize=undefined,unsigned-integer-overflow -fno-sanitize-recover
 RELEASE_FLAGS := -DNDEBUG
 
 BUILD := $(DEBUG)
@@ -32,7 +32,7 @@ CC_FLAGS += $(USER_FLAGS)
 
 .PHONY: all clean debug release
 
-all: $(BUILD)/$(EXE)
+all: $(BUILD)/$(EXE) $(BUILD)/bigint_crypt.o $(BUILD)/files.o $(BUILD)/clipboard.o $(BUILD)/prompt.o
 
 debug:
 	@echo Debug build
@@ -59,6 +59,18 @@ $(BUILD)/bigint_rand.o: bigint_rand.c bigint_rand.h utils.h
 
 $(BUILD)/arena.o: arena.c arena.h utils.h
 	$(CC) $(CC_FLAGS) -c arena.c -o $(BUILD)/arena.o
+
+$(BUILD)/bigint_crypt.o: bigint_crypt.h bigint_crypt.c
+	$(CC) $(CC_FLAGS) -c bigint_crypt.c -o $(BUILD)/bigint_crypt.o
+
+$(BUILD)/files.o: files.h files.c
+	$(CC) $(CC_FLAGS) -c files.c -o $(BUILD)/files.o
+
+$(BUILD)/clipboard.o: clipboard.h clipboard.c
+	$(CC) $(CC_FLAGS) -c clipboard.c -o $(BUILD)/clipboard.o
+
+$(BUILD)/prompt.o: prompt.h prompt.c
+	$(CC) $(CC_FLAGS) -c prompt.c -o $(BUILD)/prompt.o
 
 clean:
 	$(RM) $(call FixPath,$(DEBUG)/*)

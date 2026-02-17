@@ -20,6 +20,11 @@ static bool log_memory = false;
 
 void bigint_init(void) {
 	arena = arena_create(GiB(1), sizeof(mem_arena));
+	if (!arena) {
+		printf("ERROR: bigint_init: arena failed to create\n");
+		return;
+	}
+	// printf("bigint_init: arena created\n");
 	int i = arena->pos;
 
 	INITIAL_NEWTON_PRECISION = log2(17);
@@ -290,8 +295,6 @@ BigInt bigint_create_usmall(USmallInt v) {
 }
 
 BigInt bigint_copy(BigInt* dst_ptr, ConstBigInt src) {
-	assert(src);
-	assert(dst_ptr);
 	BigInt dst = *dst_ptr;
 	if (dst == src) return dst;
 
@@ -307,14 +310,43 @@ BigInt bigint_copy(BigInt* dst_ptr, ConstBigInt src) {
 	return *dst_ptr = dst;
 }
 
+BigInt bigint_copy_blocks(BigInt* dst_ptr, Block* src_blocks, size_t size) {
+	size = size_without_zeros(src_blocks, size);
+	BigInt dst = bigint_reserve(dst_ptr, size, CLEAR_DATA);
+	if (!dst) return NULL;
+	memmove(dst->data, src_blocks, size);
+	dst->size = size;
+	return dst;
+}
+
+BigInt bigint_from_little_endian(const void* _src, size_t bitpos, size_t width, BigInt* dst_ptr) {
+	// if (width == 0) return bigint_set_zero(dst_ptr);
+
+	size_t max_size = ceil_div(width, BLOCK_WIDTH);
+	BigInt dst = bigint_reserve(dst_ptr, max_size, CLEAR_DATA);
+	if (!dst) return NULL;
+
+	dst->size = from_little_endian(_src, bitpos, width, dst->data);
+	return dst;
+}
+
+// 67890123 45678901 | 23456789 01234567 | 8
+//            1          2          3  
+// 01234567 89012345 67890123 45678901 23456789
+//       ^                                   ^
+// start = 6, width = 33, block = 16
+// copy 0-5th bits
+
+void bigint_to_little_endian(ConstBigInt src, void* dst, size_t bitpos) {
+	to_little_endian(src->data, bigint_width(src), dst, bitpos);
+}
+
 /*
  * compares the absolute values of a and b
  * 
  * @return value > 0 if |a| > |b|; = 0 if |a| = |b|; < 0 if |a| < |b|
 */
 int bigint_ucmp(ConstBigInt a, ConstBigInt b) {
-	assert(a);
-	assert(b);
 	const Slice A = { .data = a->data, .size = a->size };
 	const Slice B = { .data = b->data, .size = b->size };
 	return cmp(A, B);
@@ -325,9 +357,6 @@ int bigint_ucmp(ConstBigInt a, ConstBigInt b) {
  * @return value > 0 if a > b; = 0 if a = b; < 0 if a < b
 */
 int bigint_cmp(ConstBigInt a, ConstBigInt b) {
-	assert(a);
-	assert(b);
-
 	if (a->size == 0 && b->size == 0) return 0;
 
 	if (a->sign && !b->sign) return -1;
@@ -367,17 +396,13 @@ int bigint_cmp_small(ConstBigInt a, SmallInt b) {
 		return (b < 0) ? 1 : -(b > 0);
 	}
 	if (a->size > 1 || CLZ(a->data[0]) == 0) return (a->sign) ? -1 : 1;
-	const int a_val = (a->sign) ? -a->data[0] : a->data[0];
+	const SmallInt a_val = (a->sign ? -1 : 1) * (SmallInt)a->data[0];
 	if (a_val < b) return -1;
 	return a_val > b;
 }
 
 // |out| = |a| + |b|
 BigInt bigint_uadd(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
-	assert(a);
-	assert(b);
-	assert(out_ptr);
-
 	// add_a() needs a.size >= b.size, so swap a and b if otherwise
 	if (a->size < b->size) {
 		ConstBigInt tmp = a;
@@ -405,10 +430,6 @@ BigInt bigint_uadd(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 
 // out = |a| - |b|
 BigInt bigint_usub(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
-	assert(a);
-	assert(b);
-	assert(out_ptr);
-
 	Slice A = { .data = a->data, .size = a->size };
 	Slice B = { .data = b->data, .size = b->size };
 	int cmp_res = cmp(A, B);
@@ -429,10 +450,6 @@ BigInt bigint_usub(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 
 // out = a + b
 BigInt bigint_add(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
-	assert(a);
-	assert(b);
-	assert(out_ptr);
-
 	if (a->sign == b->sign) {
 		bigint_uadd(a, b, out_ptr);
 		(*out_ptr)->sign = a->sign;
@@ -458,10 +475,6 @@ BigInt bigint_add(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 
 // out = a - b,
 BigInt bigint_sub(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
-	assert(a);
-	assert(b);
-	assert(out_ptr);
-
 	if (a->sign != b->sign) {
 		bigint_uadd(a, b, out_ptr);
 		(*out_ptr)->sign = a->sign;
@@ -487,10 +500,6 @@ BigInt bigint_sub(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 
 // |out| = |a| * |b|
 BigInt bigint_umul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
-	assert(a);
-	assert(b);
-	assert(out_ptr);
-
 	if (a->size == 0 || b->size == 0) {
 		return bigint_set_zero(out_ptr);
 	}
@@ -519,6 +528,7 @@ BigInt bigint_umul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 	out->size = mul(A, B, out->data);
 	assert(out->size <= cap);
 	assert(out->size == size_without_zeros(out->data, out->size));
+	/*
 	assert(({
 		Block* check = malloc(cap * sizeof(Block));
 		size_t check_size = long_mul(A, B, check);
@@ -526,6 +536,7 @@ BigInt bigint_umul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 		free(check);
 		cmp_res == 0;
 	}));
+	*/
 
 	arena_pop_to(arena, restore_pos);
 
@@ -536,10 +547,6 @@ error:
 
 // out = a * b
 BigInt bigint_mul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
-	assert(a);
-	assert(b);
-	assert(out_ptr);
-
 	bool out_sign = a->sign ^ b->sign;
 	BigInt out = bigint_umul(a, b, out_ptr);
 	if (!out) return NULL;
@@ -549,15 +556,11 @@ BigInt bigint_mul(ConstBigInt a, ConstBigInt b, BigInt* out_ptr) {
 
 // |out| = |a| / |b|,
 // |rem| = |a| % |b|
-BigIntDiv bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* quo_ptr, BigInt* rem_ptr) {
-	assert(a);
-	assert(b);
-	assert(quo_ptr || rem_ptr);
-
+BigIntDiv bigint_udiv_long(ConstBigInt a, ConstBigInt b, BigInt* quo_ptr, BigInt* rem_ptr) {
 	if (b->size == 0) {
 		bigint_errno = BIGINT_ERR_DIV_BY_ZERO;
 		ELOG_STR("DIVISION BY ZERO");
-		return (BigIntDiv) { NULL };
+		return (BigIntDiv) { NULL, NULL };
 	}
 
 	u64 restore_pos = arena->pos;
@@ -571,7 +574,7 @@ BigIntDiv bigint_udiv(ConstBigInt a, ConstBigInt b, BigInt* quo_ptr, BigInt* rem
 	Block *quo_data, *rem_data;
 	size_t quo_size, rem_size;
 	
-	const size_t quo_cap = A.size - B.size + 1;
+	const size_t quo_cap = (A.size >= B.size) ? (A.size - B.size + 1) : 0;
 	const size_t rem_cap = A.size;
 
 	if (quo_ptr) {
@@ -611,18 +614,15 @@ ret:
 
 error:
 	arena_pop_to(arena, restore_pos);
-	return (BigIntDiv) { NULL };
+	return (BigIntDiv) { NULL, NULL };
 }
 
 // out = a / b,
 // rem = a % b
-BigIntDiv bigint_div(ConstBigInt a, ConstBigInt b, BigInt* quo_ptr, BigInt* rem_ptr) {
-	assert(a);
-	assert(b);
-	assert(quo_ptr || rem_ptr);
+BigIntDiv bigint_div_long(ConstBigInt a, ConstBigInt b, BigInt* quo_ptr, BigInt* rem_ptr) {
 	bool quo_sign = a->sign ^ b->sign;
 	bool rem_sign = a->sign;
-	BigIntDiv qr = bigint_udiv(a, b, quo_ptr, rem_ptr);
+	BigIntDiv qr = bigint_udiv_long(a, b, quo_ptr, rem_ptr);
 	if (!qr.q && !qr.r) return qr;
 	if (qr.q) qr.q->sign = quo_sign;
 	if (qr.r) qr.r->sign = rem_sign;
@@ -630,8 +630,6 @@ BigIntDiv bigint_div(ConstBigInt a, ConstBigInt b, BigInt* quo_ptr, BigInt* rem_
 }
 
 BigInt bigint_lshift_blocks(ConstBigInt z, size_t shift, BigInt* out_ptr) {
-	assert(z);
-	assert(out_ptr);
 	if (z->size == 0) return bigint_set_zero(out_ptr);
 	if (shift == 0) return bigint_copy(out_ptr, z);
 
@@ -643,8 +641,6 @@ BigInt bigint_lshift_blocks(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 }
 
 BigInt bigint_rshift_blocks(ConstBigInt z, size_t shift, BigInt* out_ptr) {
-	assert(z);
-	assert(out_ptr);
 	if (z->size <= shift) return bigint_set_zero(out_ptr);
 	if (shift == 0) return bigint_copy(out_ptr, z);
 
@@ -655,8 +651,6 @@ BigInt bigint_rshift_blocks(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 }
 
 BigInt bigint_lshift(ConstBigInt z, size_t shift, BigInt* out_ptr) {
-	assert(z);
-	assert(out_ptr);
 	if (z->size == 0) return bigint_set_zero(out_ptr);
 
 	const size_t shift_blocks = shift / BLOCK_WIDTH;
@@ -698,9 +692,6 @@ BigInt bigint_lshift(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 }
 
 BigInt bigint_rshift(ConstBigInt z, size_t shift, BigInt* out_ptr) {
-	assert(z);
-	assert(out_ptr);
-
 	const size_t shift_blocks = shift / BLOCK_WIDTH;
 	const int shift_bits = shift % BLOCK_WIDTH;
 	if (shift_bits == 0) return bigint_rshift_blocks(z, shift_blocks, out_ptr);
@@ -738,11 +729,42 @@ BigInt bigint_rshift(ConstBigInt z, size_t shift, BigInt* out_ptr) {
 	return out;
 }
 
+bool bigint_bit_get(ConstBigInt z, size_t bit) {
+	if (bit >= bigint_width(z)) return false;
+	return bit_get(z->data, bit);
+}
+
+BigInt bigint_bit_set(BigInt* z_ptr, size_t bit) {
+	size_t size = bit / BLOCK_WIDTH + 1;
+	BigInt z = bigint_reserve(z_ptr, size, KEEP_DATA);
+	if (!z) return NULL;
+	if (size > z->size) {
+		memset(z->data + z->size, 0, sizeof(Block) * (size - z->size));
+		z->size = size;
+	}
+	bit_set(z->data, bit);
+	return z;
+}
+
+BigInt bigint_bit_unset(BigInt z, size_t bit) {
+	size_t width = bigint_width(z);
+	if (bit >= width) return z;
+	bit_unset(z->data, bit);
+	z->size = size_without_zeros(z->data, z->size);
+	return z;
+}
+
+BigInt bigint_bit_set_to(BigInt* z_ptr, size_t bit, bool val) {
+	if (val) return bigint_bit_set(z_ptr, bit);
+	else return bigint_bit_unset(*z_ptr, bit);
+}
+
+BigInt bigint_bit_toggle(BigInt* z_ptr, size_t bit) {
+	if (!bigint_bit_get(*z_ptr, bit)) return bigint_bit_set(z_ptr, bit);
+	else return bigint_bit_unset(*z_ptr, bit);
+}
+
 BigInt bigint_pow(ConstBigInt a, size_t exp, BigInt* out_ptr) {
-	assert(a);
-	assert(exp);
-	assert(out_ptr);
-	
 	BigInt out = bigint_reserve(out_ptr, to_blocks(exp * bigint_width(a)), CLEAR_DATA);
 	if (!out) return NULL;
 
@@ -751,33 +773,17 @@ BigInt bigint_pow(ConstBigInt a, size_t exp, BigInt* out_ptr) {
 }
 
 BigInt bigint_powmod(ConstBigInt a, ConstBigInt exp, ConstBigInt mod, BigInt* out_ptr) {
-	assert(a);
-	assert(exp);
-	assert(mod);
-	assert(out_ptr);
-	
+	bool sign = (a->sign && bigint_bit_get(exp, 0));
+
 	BigInt out = bigint_reserve(out_ptr, mod->size, CLEAR_DATA);
 	if (!out) return NULL;
 
-	out->size = powmod(AS_SLICE(a), AS_SLICE(exp), AS_SLICE(mod), out->data);
-	return out;
-}
-
-BigInt bigint_powmod_recpr(ConstBigInt a, ConstBigInt exp, ConstBigInt mod, ConstBigInt recpr, size_t precision, BigInt* out_ptr) {
-	assert(a);
-	assert(exp);
-	assert(mod);
-	assert(out_ptr);
-	
-	BigInt out = bigint_reserve(out_ptr, mod->size, CLEAR_DATA);
-	if (!out) return NULL;
-
-	out->size = powmod_recpr(AS_SLICE(a), AS_SLICE(exp), AS_SLICE(mod), AS_SLICE(recpr), precision, out->data);
+	out->size = powmod_recpr(AS_SLICE(a), AS_SLICE(exp), AS_SLICE(mod), out->data);
+	out->sign = sign;
 	return out;
 }
 
 int bigint_fwrite(FILE* file, ConstBigInt z, bool is_signed) {
-	assert(z);
 	uint64_t size = z->size;
 	if (fwrite(&size, sizeof(size), 1, file) != 1) {
 		return errno;
@@ -793,7 +799,6 @@ int bigint_fwrite(FILE* file, ConstBigInt z, bool is_signed) {
 }
 
 int bigint_fread(FILE* file, BigInt* z_ptr, bool is_signed) {
-	assert(z_ptr);
 	uint64_t size;
 	if (fread(&size, sizeof(size), 1, file) != 1) return errno;
 	BigInt z = bigint_resize(z_ptr, size);
@@ -933,7 +938,6 @@ char* bigint_str(ConstBigInt z, FormatSpec bifs) {
 }
 
 char* bigint_hex_str(ConstBigInt z, FormatSpec bifs) {
-	assert(z);
 	bool add_minus_sign = z->sign && !bifs.is_unsigned; 
 	bool add_sign = add_minus_sign || bifs.add_plus_sign;
 
@@ -968,7 +972,8 @@ char* bigint_hex_str(ConstBigInt z, FormatSpec bifs) {
 	if (bifs.leading_zeros) offset += sprintf(str + offset, f_0hex, z->data[i]);
 	else offset += sprintf(str + offset, f_hex, z->data[i]);
 
-	while (i-- > 0) {
+	while (i > 0) {
+		i--;
 		if (bifs.add_spaces) offset += sprintf(str + offset, " ");
 		offset += sprintf(str + offset, f_0hex, z->data[i]);
 	}
@@ -977,7 +982,6 @@ char* bigint_hex_str(ConstBigInt z, FormatSpec bifs) {
 }
 
 char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
-	assert(z);
 	const bool add_minus_sign = z->sign && !bifs.is_unsigned; 
 	const bool add_sign = add_minus_sign || bifs.add_plus_sign;
 
@@ -1004,11 +1008,12 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 	}
 
 	char* digits = str + offset;
-
 	size_t len = decimal_split(AS_SLICE(z), digits);
+
 	digits[len] = '\0';
 
 	// 1234567890123
+	//     1234567890123
 	// 1    234567890123
 	// 1 234   567890123
 	// 1 234 567  890123
@@ -1016,16 +1021,17 @@ char* bigint_dec_str(ConstBigInt z, FormatSpec bifs) {
 
 	if (bifs.add_spaces) {
 		size_t spaces = len / DDPS;
-		size_t space1 = ((len - 1) % DDPS) + 1;
-		digits += space1;
-		len -= space1;
-		memmove(digits + spaces, digits, sizeof(char) * len);
-		digits[0] = ' ';
-		for (size_t i = 0; i < spaces - 1; i++) {
-			memmove(digits + 1 + i * (DDPS + 1), digits + spaces + i * DDPS, sizeof(char) * DDPS);
-			digits[(i + 1) * (DDPS + 1)] = ' ';
+		size_t space_idx = len % DDPS;
+		memmove(digits + spaces, digits, len * sizeof(char));
+		size_t j = 0;
+		for (size_t i = 0; i < len; i++) {
+			digits[i + j] = digits[spaces + i];
+			if ((i + 1) % DDPS == space_idx) {
+				digits[i + j + 1] = ' ';
+				j++;
+			}
 		}
-		digits[spaces * (DDPS + 1)] = '\0';
+		digits[len + spaces] = '\0';
 	}
 	return str;
 }
@@ -1107,11 +1113,8 @@ BigInt bigint_scan_hex(const char* str, size_t str_len, BigInt* out_ptr) {
 }
 
 BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr) {
-	assert(str);
-	assert(out_ptr);
 	if (str_len == 0) return bigint_set_zero(out_ptr);
 	size_t cap = str_len / (MAX_DEC_DIGITS_PER_BLOCK - 1) + 1;
-	assert(cap > 0);
 	BigInt out = bigint_rezalloc(out_ptr, cap);
 	if (!out) return NULL;
 
@@ -1149,9 +1152,7 @@ BigInt bigint_scan_dec(const char* str, size_t str_len, BigInt* out_ptr) {
 	return out;
 }
 
-BigInt bigint_urecpr(ConstBigInt d, size_t precision, BigInt* out_ptr) {
-	assert(d);
-	assert(out_ptr);
+BigInt bigint_recpr(ConstBigInt d, size_t precision, BigInt* out_ptr) {
 	if (d->size == 0) {
 		bigint_errno = BIGINT_ERR_DIV_BY_ZERO;
 		ELOG_STR("DIVISION BY ZERO");
@@ -1164,53 +1165,120 @@ BigInt bigint_urecpr(ConstBigInt d, size_t precision, BigInt* out_ptr) {
 	return out;
 }
 
-BigInt bigint_recpr(ConstBigInt d, size_t precision, BigInt* out_ptr) {
-	assert(d);
-	assert(out_ptr);
-	BigInt out = bigint_urecpr(d, precision, out_ptr);
-	if (!out) return NULL;
-	out->sign = d->sign;
-	return out;
-}
-
-BigInt bigint_udiv_recpr(ConstBigInt num, ConstBigInt denum, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem) {
-	assert(num);
-	assert(denum);
-	assert(recpr);
-	assert(quo);
-	assert(rem);
+BigIntDiv bigint_udiv_recpr(ConstBigInt num, ConstBigInt denum, ConstBigInt recpr, size_t precision,
+		BigInt* quo_ptr, BigInt* rem_ptr) {
 	if (denum->size == 0) {
 		bigint_errno = BIGINT_ERR_DIV_BY_ZERO;
 		ELOG_STR("DIVISION BY ZERO");
-		return NULL;
+		return (BigIntDiv) { NULL, NULL };
 	}
+
+	size_t restore_pos = arena->pos;
 	size_t rem_size;
 	size_t quo_size = div_recpr_cap(num->size, denum->size, recpr->size, precision, &rem_size);
-	*quo = bigint_reserve(quo, quo_size, CLEAR_DATA);
-	if (!*quo) return NULL;
-	*rem = bigint_reserve(rem, rem_size, CLEAR_DATA);
-	if (!*rem) return NULL;
-	(*quo)->size = div_recpr(AS_SLICE(num), AS_SLICE(denum), AS_SLICE(recpr), precision, (*quo)->data, (*rem)->data, &rem_size);
-	(*rem)->size = rem_size;
-	return *quo;
+	Block* quo_data = PUSH_ARRAY(arena, Block, quo_size);
+	Block* rem_data = PUSH_ARRAY(arena, Block, rem_size);
+
+	quo_size = div_recpr(AS_SLICE(num), AS_SLICE(denum), AS_SLICE(recpr), precision,
+			quo_data, rem_data, &rem_size);
+
+	BigIntDiv out = { NULL, NULL };
+	if (quo_ptr) {
+		out.q = bigint_reserve(quo_ptr, quo_size, CLEAR_DATA);
+		if (!out.q) goto ret;
+		out.q->size = quo_size;
+		memcpy(out.q->data, quo_data, sizeof(Block) * quo_size) ;
+	}
+	if (rem_ptr) {
+		out.r = bigint_reserve(rem_ptr, rem_size, CLEAR_DATA);
+		if (!out.r) goto ret;
+		out.r->size = rem_size;
+		memcpy(out.r->data, rem_data, sizeof(Block) * rem_size) ;
+	}
+
+ret:
+	arena_pop_to(arena, restore_pos);
+	return out;
 }
 
-BigInt bigint_div_recpr(ConstBigInt num, ConstBigInt denum, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem) {
-	assert(num);
-	assert(denum);
-	assert(recpr);
-	assert(quo);
-	assert(rem);
+BigIntDiv bigint_div_recpr(ConstBigInt num, ConstBigInt denum, ConstBigInt recpr, size_t precision, BigInt* quo, BigInt* rem) {
 	bool quo_sign = num->sign ^ denum->sign;
 	bool rem_sign = num->sign;
-	BigInt out = bigint_udiv_recpr(num, denum, recpr, precision, quo, rem);
-	if (!out) return NULL;
-	out->sign = quo_sign;
-	(*rem)->sign = rem_sign;
+	BigIntDiv out = bigint_udiv_recpr(num, denum, recpr, precision, quo, rem);
+	if (!out.q && !out.r) return (BigIntDiv) { NULL, NULL };
+	if (out.q) out.q->sign = quo_sign;
+	if (out.r) out.r->sign = rem_sign;
+	return out;
+}
+
+BigIntDiv bigint_udiv(ConstBigInt num, ConstBigInt denum, BigInt* quo_ptr, BigInt* rem_ptr) {
+	// return bigint_udiv_long(num, denum, quo_ptr, rem_ptr);
+	if (denum->size == 0) {
+		bigint_errno = BIGINT_ERR_DIV_BY_ZERO;
+		ELOG_STR("DIVISION BY ZERO");
+		return (BigIntDiv) { NULL, NULL };
+	}
+
+	size_t restore_pos = arena->pos;
+
+	size_t num_width = bigint_width(num);
+	size_t denum_width = bigint_width(denum);
+	size_t precision = MAX(num_width, denum_width);
+	size_t recpr_cap = newton_reciprocal_cap(precision);
+	Slice recpr = { PUSH_ARRAY(arena, Block, recpr_cap) };
+	recpr.size = newton_reciprocal(AS_SLICE(denum), precision, MUT_DATA(recpr));
+
+	size_t rem_size;
+	size_t quo_size = div_recpr_cap(num->size, denum->size, recpr.size, precision, &rem_size);
+	Block* quo_data = PUSH_ARRAY(arena, Block, quo_size);
+	Block* rem_data = PUSH_ARRAY(arena, Block, rem_size);
+
+	quo_size = div_recpr(AS_SLICE(num), AS_SLICE(denum), recpr, precision,
+			quo_data, rem_data, &rem_size);
+
+	BigIntDiv out = { NULL, NULL };
+	if (quo_ptr) {
+		out.q = bigint_reserve(quo_ptr, quo_size, CLEAR_DATA);
+		if (!out.q) goto ret;
+		out.q->size = quo_size;
+		memcpy(out.q->data, quo_data, sizeof(Block) * quo_size) ;
+	}
+	if (rem_ptr) {
+		out.r = bigint_reserve(rem_ptr, rem_size, CLEAR_DATA);
+		if (!out.r) goto ret;
+		out.r->size = rem_size;
+		memcpy(out.r->data, rem_data, sizeof(Block) * rem_size) ;
+	}
+
+ret:
+	arena_pop_to(arena, restore_pos);
+	return out;
+}
+
+BigIntDiv bigint_div(ConstBigInt num, ConstBigInt denum, BigInt* quo, BigInt* rem) {
+	bool quo_sign = num->sign ^ denum->sign;
+	bool rem_sign = num->sign;
+	BigIntDiv out = bigint_udiv(num, denum, quo, rem);
+	if (!out.q && !out.r) return (BigIntDiv) { NULL, NULL };
+	if (out.q) out.q->sign = quo_sign;
+	if (out.r) out.r->sign = rem_sign;
 	return out;
 }
 
 size_t bigint_decimal_width(ConstBigInt num) {
 	return decimal_width(bigint_width(num));
+}
+
+void bigint_warn_bad_recpr(bool y) {
+	warn_bad_recpr = y;
+}
+
+void bigint_bad_recpr_stat() {
+	printf("Total divisions using reciprocal: %d\n", cnt_div);
+	printf("Bad reciprocals: %d\n", cnt_bad_recpr);
+}
+
+bool bigint_is_valid(ConstBigInt z) {
+	return !z || z->size == size_without_zeros(z->data, z->size);
 }
 

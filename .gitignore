@@ -2,6 +2,9 @@
 *.bat
 *.o
 *.d
+*.pdb
+*.ilk
+*.exp
 debug/*
 release/*
 debug-linux/*

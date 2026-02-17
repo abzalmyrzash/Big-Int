@@ -27,3 +27,5 @@ inline u64 ceil_div(u64 n, u64 d) {
 	if (n == 0) return 0;
 	return (n - 1) / d + 1;
 }
+
+#define PRINT_VAR(x, f) printf(#x ": " f "\n", x)

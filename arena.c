@@ -32,7 +32,7 @@ void* arena_push(mem_arena* arena, size_t size, b32 zero) {
     size_t new_pos = pos_aligned + size;
 
     if (new_pos > arena->reserve_size) { 
-		fprintf(stderr, "ERROR: out of memory in arena_push\n");
+		fprintf(stderr, "ERROR: out of memory in arena_push (tried to push %zu bytes)\n", size);
 		abort();
 		return NULL;
 	}

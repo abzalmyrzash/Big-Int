@@ -35,7 +35,9 @@ typedef struct {
 	size_t bufsize;
 } Context;
 
-thread_local mem_arena* arena;
+static thread_local mem_arena* arena;
+
+static bool warn_bad_recpr = true;
 
 static constexpr Block VALUE_TEN = 10;
 static const Slice TEN = {
@@ -693,9 +695,10 @@ static size_t karatsuba(Slice b, Slice d, size_t n, Block* out) {
 	// move abcd from out to out + m, basically leftshifting abcd <<< m
 	memmove(out + m, out, abcd.size * sizeof(Block));
 	abcd.data += m;
-	// (abcd << m) + bd
+	// (abcd <<< m) + bd
 	size_t size = add_sls_signed(abcd, m, abcd_sign, b_times_d, 0, out, &abcd_sign, true);
 	arena_pop_to(arena, restore_pos);
+	assert(size == size_without_zeros(out, size));
 	return size;
 }
 
@@ -713,7 +716,6 @@ static size_t copy(Slice z, Block* out) {
 // this operation is denoted as <<< (as opposed to << for left-shift by bits)
 static size_t super_lshift(Slice z, size_t shift, Block* out) {
 	if (z.size == 0) return 0;
-	if (shift == 0) return move(z, out);
 	memmove(out + shift, z.data, z.size * sizeof(Block));
 	memset(out, 0, shift * sizeof(Block));
 	return z.size + shift;
@@ -750,13 +752,12 @@ static size_t lshift(Slice z, size_t shift, Block* out) {
 	}
 	out[i + shift_blocks] = lo << shift_bits;
 
-	if (i--) while (1) {
+	while (i > 0) {
+		i--;
 		hi = z.data[i] & HIGH_BITS;
 		lo = z.data[i] & LOW_BITS;
 		out[i + shift_blocks] = lo << shift_bits;
 		out[i + shift_blocks + 1] |= hi >> (BLOCK_WIDTH - shift_bits);
-		if (i == 0) break;
-		i--;
 	}
 
 	memset(out, 0, shift_blocks * sizeof(Block));
@@ -873,12 +874,21 @@ static size_t ceil_rshift(Slice x, size_t shift, Block* out_data) {
 	return size;
 }
 
+static inline bool bit_get(const Block* z, size_t bitpos) {
+	return z[bitpos / BLOCK_WIDTH] & (1ULL << (bitpos % BLOCK_WIDTH));
+}
+
 static inline void bit_set(Block* z, size_t bitpos) {
 	z[bitpos / BLOCK_WIDTH] |= (1ULL << (bitpos % BLOCK_WIDTH));
 }
 
 static inline void bit_unset(Block* z, size_t bitpos) {
 	z[bitpos / BLOCK_WIDTH] &= ~(1ULL << (bitpos % BLOCK_WIDTH));
+}
+
+static inline void bit_set_to(Block* z, size_t bitpos, bool val) {
+	z[bitpos / BLOCK_WIDTH] |= ((uint64_t)val << (bitpos % BLOCK_WIDTH));
+	z[bitpos / BLOCK_WIDTH] &= ~((uint64_t)!val << (bitpos % BLOCK_WIDTH));
 }
 
 static inline void bit_toggle(Block* z, size_t bitpos) {
@@ -993,7 +1003,7 @@ static size_t long_div(const Slice a, const Slice b, Block* quo,
 
 	assert(CLZ(c.data[c.size - 1]) == a_clz);
 
-	bitpos = size_diff * BLOCK_WIDTH - clz_diff;
+	bitpos = (i64)size_diff * BLOCK_WIDTH - (i64)clz_diff;
 
 	// (c <<< block_shift) > rem
 	cmp_res = cmp_sls(c, block_shift, rem);
@@ -1030,6 +1040,9 @@ static size_t long_div(const Slice a, const Slice b, Block* quo,
 	*rem_size = rem.size;
 
 	arena_pop_to(arena, restore_pos);
+
+	assert(quo_size == size_without_zeros(quo, quo_size));
+	assert(rem.size == size_without_zeros(rem.data, rem.size));
 	return quo_size;
 }
 
@@ -1156,6 +1169,7 @@ static size_t newton_reciprocal(Slice d, size_t precision, Block* out) {
 	}
 
 	arena_pop_to(arena, restore_pos);
+	assert(x.size == size_without_zeros(x.data, x.size));
 	return x.size;
 }
 
@@ -1163,20 +1177,25 @@ static size_t div_recpr_cap(size_t num_size, size_t denum_size, size_t recpr_siz
 	assert(denum_size);
 	const size_t denum_width = denum_size * BLOCK_WIDTH;
 	const size_t quo_cap = num_size + recpr_size;
-	const size_t shf = precision + denum_width;
-	const size_t shf_quo_cap = quo_cap - shf / BLOCK_WIDTH + 1;
+	const size_t shf = (precision + denum_width);
+	const size_t shf_quo_cap = (quo_cap < shf / BLOCK_WIDTH) ? 0 : (quo_cap - shf / BLOCK_WIDTH + 1);
 	const size_t dq_cap = denum_size + shf_quo_cap;
 	*rem_cap = MAX(num_size, dq_cap);
 	return quo_cap;
 }
+
+static int cnt_div = 0;
+static int cnt_bad_recpr = 0;
+
+#define RECIPROCAL_TOLERANCE 4
 
 // divide using reciprocal
 static size_t div_recpr(Slice num, Slice denum, Slice recpr, size_t precision, Block* quo_data, Block* rem_data, size_t* rem_size) {
 	assert(denum.size);
 	const size_t denum_width = width(denum);
 	const size_t quo_cap = num.size + recpr.size;
-	const size_t shf = precision + denum_width;
-	const size_t shf_quo_cap = quo_cap - shf / BLOCK_WIDTH;
+	const size_t shf = (precision + denum_width);
+	const size_t shf_quo_cap = (quo_cap < shf / BLOCK_WIDTH) ? 0 : (quo_cap - shf / BLOCK_WIDTH + 1);
 	const size_t dq_cap = denum.size + shf_quo_cap;
 	const size_t rem_cap = MAX(num.size, dq_cap);
 
@@ -1193,12 +1212,14 @@ static size_t div_recpr(Slice num, Slice denum, Slice recpr, size_t precision, B
 	bool rem_sign;
 	rem.size = sub(num, dq, rem_data, &rem_sign);
 	size_t rem_width = width(rem);
+	cnt_div++;
 
 	if(rem_sign == POSITIVE) {
 		if (cmp(rem, denum) >= 0) {
 			size_t width_diff = rem_width - denum_width;
-			if (width_diff > 1) {
-				WLOG_STR("BAD RECIPROCAL APPROXIMATION (remainder is %zu bits larger)", width_diff);
+			if (width_diff > RECIPROCAL_TOLERANCE) {
+				cnt_bad_recpr++;
+				if (warn_bad_recpr) WLOG_STR("BAD RECIPROCAL APPROXIMATION (remainder is %zu bits larger)", width_diff);
 				quo.size = long_div(num, denum, quo_data, rem_data, &rem.size);
 			} else do {
 				rem.size = usub(rem, denum, rem_data);
@@ -1207,8 +1228,9 @@ static size_t div_recpr(Slice num, Slice denum, Slice recpr, size_t precision, B
 		}
 	} else {
 		size_t width_diff = rem_width > denum_width ? rem_width - denum_width : 0;
-		if (width_diff > 1) {
-			WLOG_STR("BAD RECIPROCAL APPROXIMATION (remainder is %zu bits larger and negative)", width_diff);
+		if (width_diff > RECIPROCAL_TOLERANCE) {
+			cnt_bad_recpr++;
+			if (warn_bad_recpr) WLOG_STR("BAD RECIPROCAL APPROXIMATION (remainder is %zu bits larger and negative)", width_diff);
 			quo.size = long_div(num, denum, quo_data, rem_data, rem_size);
 			rem_sign = POSITIVE;
 		} else do {
@@ -1225,6 +1247,8 @@ static size_t div_recpr(Slice num, Slice denum, Slice recpr, size_t precision, B
 	arena_pop_to(arena, restore_pos);
 
 	*rem_size = rem.size;
+	assert(quo.size == size_without_zeros(quo.data, quo.size));
+	assert(rem.size == size_without_zeros(rem.data, rem.size));
 	return quo.size;
 }
 
@@ -1254,6 +1278,7 @@ static size_t power(Slice a, size_t exp, Block* out_data) {
 	}
 
 	arena_pop_to(arena, restore_pos);
+	assert(out.size == size_without_zeros(out.data, out.size));
 	return out.size;
 }
 
@@ -1312,10 +1337,11 @@ static size_t powmod(Slice a, Slice exp, Slice mod, Block* out_data) {
 	}
 
 	arena_pop_to(arena, restore_pos);
+	assert(out.size == size_without_zeros(out.data, out.size));
 	return out.size;
 }
 
-static size_t powmod_recpr(Slice a, Slice exp, Slice mod, Slice recpr, size_t precision, Block* out_data) {
+static size_t powmod_recpr(Slice a, Slice exp, Slice mod, Block* out_data) {
 	assert(mod.size);
 	assert(out_data != a.data);
 
@@ -1328,7 +1354,15 @@ static size_t powmod_recpr(Slice a, Slice exp, Slice mod, Slice recpr, size_t pr
 
 	size_t restore_pos = arena->pos;
 
+	size_t mod_width = width(mod);
+
 	if (cmp_a_mod > 0) {
+		size_t a_width = width(a);
+		size_t precision = MAX(a_width, mod_width);
+		size_t recpr_cap = newton_reciprocal_cap(precision);
+		Slice recpr = { PUSH_ARRAY(arena, Block, recpr_cap) };
+		recpr.size = newton_reciprocal(mod, precision, MUT_DATA(recpr));
+
 		size_t quo_cap, rem_cap;
 		quo_cap = div_recpr_cap(a.size, mod.size, recpr.size, precision, out_data);
 		Block* rem = PUSH_ARRAY(arena, Block, rem_cap);
@@ -1343,6 +1377,11 @@ static size_t powmod_recpr(Slice a, Slice exp, Slice mod, Slice recpr, size_t pr
 		POP_ARRAY(arena, Block, quo_cap);
 		a.data = rem;
 	}
+
+	size_t precision = mod_width * 2;
+	size_t recpr_cap = newton_reciprocal_cap(precision);
+	Slice recpr = { PUSH_ARRAY(arena, Block, recpr_cap) };
+	recpr.size = newton_reciprocal(mod, precision, MUT_DATA(recpr));
 
 	Slice out = { .data = out_data, .size = 1 };
 	out_data[0] = 1;
@@ -1379,6 +1418,7 @@ static size_t powmod_recpr(Slice a, Slice exp, Slice mod, Slice recpr, size_t pr
 		}
 	}
 	arena_pop_to(arena, restore_pos);
+	assert(out.size == size_without_zeros(out.data, out.size));
 	return out.size;
 }
 
@@ -1576,5 +1616,135 @@ size_t decimal_split(Slice x, char* str) {
 		}
 		return quo_dw + half_dw;
 	} else return rem_dw;
+}
+
+//            1          2          3           4
+// 01234567 89012345 67890123 45678901 23456789 01234567
+//                ^                              ^
+// bitpos = 14, width = 28, block_width = 16
+// byte_offset = bitpos / 8 = 1, bit_offset = bitpos % 8 = 6
+// len = width / 8 = 3, last_bits = width % 8 = 4
+// block = 0, shift = 0
+// for i = 0 to len {
+//     byte = (high (8 - bit_offset = 2) bits from [i + byte_offset] >> bit_offset)
+//        | (low (bit_offset = 6) bits [i + byte_offset + 1] << (8 - bit_offset))
+//     dst[block] = byte << shift
+//     shift += 8
+//     if shift reaches block_width, increment block, set shift = 0
+// }
+// 45678901 23456789 | 01234567
+// if (last_bits > 0) {
+//     byte = high 2 bits from [len + byte_offset]
+//     if (rem_bits > (8 - bit_offset))
+//         byte |= low 6 bits from [len + byte_offset + 1] << 2
+//     byte &= mask for lowest rem_bits
+//     dst[block] = byte << shift
+//     block++
+// }
+// 45678901 23456789 | 01234567 8901
+
+
+static size_t from_little_endian(const u8* src_bytes, size_t bitpos, size_t width, Block* dst_blocks) {
+	size_t max_size = ceil_div(width, BLOCK_WIDTH);
+	memset(dst_blocks, 0, sizeof(Block) * max_size);
+
+	const size_t byte_offset = bitpos / CHAR_BIT;
+	const size_t bit_offset  = bitpos % CHAR_BIT;
+	const size_t bit_remwid  = CHAR_BIT - bit_offset;
+	const size_t len         = width / CHAR_BIT;
+	const size_t last_bits   = width % CHAR_BIT;
+
+	const u8 LOW_BITS = (u8)(1U << bit_offset) - 1;
+	const u8 HIGH_BITS = (u8)~0U - LOW_BITS;
+
+	u8 byte;
+	size_t block = 0;
+	size_t shift = 0;
+	for (size_t i = 0; i < len; i++) {
+		byte = (src_bytes[i + byte_offset] & HIGH_BITS) >> bit_offset;
+		if (LOW_BITS) byte |= (src_bytes[i + byte_offset + 1] & LOW_BITS) << bit_remwid;
+		assert(block < max_size);
+		dst_blocks[block] |= (Block)byte << shift;
+		shift += CHAR_BIT;
+		if (shift == BLOCK_WIDTH) {
+			block++;
+			shift = 0;
+		}
+	}
+
+	if (last_bits > 0) {
+		byte = (src_bytes[len + byte_offset] & HIGH_BITS) >> bit_offset;
+		if (last_bits > bit_remwid) {
+			byte |= (src_bytes[len + byte_offset + 1] & LOW_BITS) << bit_remwid;
+		}
+		byte &= (1 << last_bits) - 1;
+		assert(block < max_size);
+		dst_blocks[block] |= (Block)byte << shift;
+	}
+	fflush(stdout);
+
+	return size_without_zeros(dst_blocks, max_size);
+}
+
+// 45678901 23456789 | 01234567 8901
+//            1          2          3           4
+// 01234567 89012345 67890123 45678901 23456789 01234567
+//                ^                              ^
+// bitpos = 14, width = 28, block_width = 16
+// byte_offset = bitpos / 8 = 1, bit_offset = bitpos % 8 = 6
+// len = width / 8 = 3, rem_bits = width % 8 = 4
+// [byte_offset] &= low_mask (8th-13th bits)
+// 01234567 890123xx
+// block = 0, shift = 0
+// byte_mask = 255
+// for i = 0 to len:
+//     byte = [block] & (byte_mask << shift) >> shift
+//     shift += 8
+//     dst[byte_offset + i] |= (byte & low_mask) << bit_offset
+//     dst[byte_offset + i + 1] = (byte & high_mask) >> (8 - bit_offset)
+//     if (shift == block_width) {
+//          shift = 0
+//          block++
+//     }
+//  01234567 89012345 67890123 45678901 234567xx xx
+//  add 8901
+//  if (last_bits > 0) {
+//      byte = [block] & (byte_mask << shift) >> shift
+//      dst[byte_offset + len] |= (byte & low_mask) << bit_offset
+//      dst[byte_offset + len + 1] &= ~0 - (1 << bit_offset);
+//  }
+
+static void to_little_endian(const Block* src_blocks, size_t width, u8* dst_bytes, size_t bitpos) {
+	const size_t byte_offset = bitpos / CHAR_BIT;
+	const size_t bit_offset  = bitpos % CHAR_BIT;
+	const size_t bit_remwid  = CHAR_BIT - bit_offset;
+	const size_t len         = width / CHAR_BIT;
+	const size_t last_bits   = width % CHAR_BIT;
+
+	const u8 LOW_BITS  = (u8)((1 << bit_remwid) - 1);
+	const u8 HIGH_BITS = (u8)~0 - LOW_BITS;
+
+	u8 byte;
+	size_t block = 0;
+	int shift = 0;
+	constexpr Block BYTE_MASK = 255;
+	for (size_t i = 0; i < len; i++) {
+		byte = (src_blocks[block] & (BYTE_MASK << shift)) >> shift;
+		dst_bytes[byte_offset + i] |= (byte & LOW_BITS) << bit_offset;
+		if (HIGH_BITS) dst_bytes[byte_offset + i + 1] = (byte & HIGH_BITS) >> bit_remwid;
+		shift += 8;
+		if (shift == BLOCK_WIDTH) {
+			shift = 0;
+			block++;
+		}
+	}
+
+	if (last_bits > 0) {
+		byte = (src_blocks[block] & (BYTE_MASK << shift)) >> shift;
+		dst_bytes[byte_offset + len] |= (byte & LOW_BITS) << bit_offset;
+		if (last_bits > bit_remwid) {
+			dst_bytes[byte_offset + len + 1] = (byte & HIGH_BITS) >> bit_remwid;
+		}
+	}
 }
 
